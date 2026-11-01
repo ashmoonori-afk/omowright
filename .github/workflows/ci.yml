@@ -80,3 +80,67 @@ jobs:
             echo "| Ref | ${{ github.ref_name }} |"
             echo "| Commit | ${{ github.sha }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The browser and BrowserSkill code has win32-only paths (named pipes, scheduled tasks, profile locks) that
+  # the ubuntu job skips; this job runs the same two suites on Windows so those paths have a CI owner.
+  test-windows:
+    name: test (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+      - run: bun install --frozen-lockfile
+
+      - name: Install chrome-headless-shell
+        id: browser
+        shell: bash
+        run: |
+          out=$(bunx @puppeteer/browsers install chrome-headless-shell@stable --path "$RUNNER_TEMP/browsers")
+          bin=$(printf '%s\n' "$out" | tail -n 1 | awk '{print $2}')
+          test -x "$bin"
+          "$bin" --version
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+      - name: bun test
+        env:
+          SHELL_BIN: ${{ steps.browser.outputs.bin }}
+          CLOAKBROWSER_BIN: ${{ steps.browser.outputs.bin }}
+        shell: bash
+        run: bun run test 2>&1 | tee "$RUNNER_TEMP/bun-test.log"
+
+      - name: node --test
+        if: ${{ !cancelled() && steps.browser.outcome == 'success' }}
+        env:
+          SHELL_BIN: ${{ steps.browser.outputs.bin }}
+          CLOAKBROWSER_BIN: ${{ steps.browser.outputs.bin }}
+        shell: bash
+        run: bun run test:node 2>&1 | tee "$RUNNER_TEMP/node-test.log"
+
+      - name: Workflow summary
+        if: always()
+        shell: bash
+        run: |
+          count() { grep -E "$2" "$1" 2>/dev/null | tail -n 1 | grep -oE '[0-9]+' | head -n 1; }
+          {
+            echo "## CI (${{ job.status }})"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Status | ${{ job.status }} |"
+            echo "| Runner | ${{ runner.os }} |"
+            echo "| Browser | ${{ steps.browser.outputs.bin }} |"
+            echo "| bun test pass / fail | $(count "$RUNNER_TEMP/bun-test.log" '^ *[0-9]+ pass$') / $(count "$RUNNER_TEMP/bun-test.log" '^ *[0-9]+ fail$') |"
+            echo "| node --test pass / fail | $(count "$RUNNER_TEMP/node-test.log" '^ℹ pass [0-9]+') / $(count "$RUNNER_TEMP/node-test.log" '^ℹ fail [0-9]+') |"
+            echo "| Ref | ${{ github.ref_name }} |"
+            echo "| Commit | ${{ github.sha }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
