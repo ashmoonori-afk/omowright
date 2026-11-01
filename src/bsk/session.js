@@ -3,6 +3,13 @@ import { captureScreenshot } from "./screenshot.js";
 
 const SESSION_STOP_TIMEOUT_MS = 3_600_000;
 
+// BrowserSkill 0.4 refuses a page action (cooperation_sync_required) unless it
+// carries the single-use context_id of the latest tool.cooperate sync, and the
+// daemon never fills it in for the caller.
+function sharedTab({ context, dependsOn }) {
+  return { context_id: context, depends_on: dependsOn };
+}
+
 export class BskSession {
   #client; #stopped = false;
 
@@ -23,21 +30,25 @@ export class BskSession {
     return this.#client.call(`tool.${name}`, compact({ session_id: this.sessionId, ...params }), { idPrefix: name.replace(/_/g, "-") });
   }
 
-  navigate(url, { tabId, waitUntil, timeoutMs } = {}) {
-    return this.tool("navigate", { url, tab_id: tabId, wait_until: waitUntil, timeout_ms: timeoutMs });
-  }
-  back({ tabId, waitUntil, timeoutMs } = {}) {
-    return this.tool("navigate_back", { tab_id: tabId, wait_until: waitUntil, timeout_ms: timeoutMs });
-  }
-  forward({ tabId, waitUntil, timeoutMs } = {}) {
-    return this.tool("navigate_forward", { tab_id: tabId, wait_until: waitUntil, timeout_ms: timeoutMs });
-  }
-  reload({ tabId, waitUntil, timeoutMs, hard } = {}) {
-    return this.tool("reload", { tab_id: tabId, wait_until: waitUntil, timeout_ms: timeoutMs, hard });
+  cooperate(action, { tabId, timeoutMs, maxTokens } = {}) {
+    return this.tool("cooperate", { action, tab_id: tabId, timeout_ms: timeoutMs, max_tokens: maxTokens });
   }
 
-  observe({ cursor, tabId, maxDepth, maxTokens, debugSurfaces, probeHover } = {}) {
-    return this.tool("observe", { cursor, tab_id: tabId, max_depth: maxDepth, max_tokens: maxTokens, debug_surfaces: debugSurfaces, probe_hover: probeHover });
+  navigate(url, { tabId, waitUntil, timeoutMs, ...shared } = {}) {
+    return this.tool("navigate", { url, tab_id: tabId, wait_until: waitUntil, timeout_ms: timeoutMs, ...sharedTab(shared) });
+  }
+  back({ tabId, waitUntil, timeoutMs, ...shared } = {}) {
+    return this.tool("navigate_back", { tab_id: tabId, wait_until: waitUntil, timeout_ms: timeoutMs, ...sharedTab(shared) });
+  }
+  forward({ tabId, waitUntil, timeoutMs, ...shared } = {}) {
+    return this.tool("navigate_forward", { tab_id: tabId, wait_until: waitUntil, timeout_ms: timeoutMs, ...sharedTab(shared) });
+  }
+  reload({ tabId, waitUntil, timeoutMs, hard, ...shared } = {}) {
+    return this.tool("reload", { tab_id: tabId, wait_until: waitUntil, timeout_ms: timeoutMs, hard, ...sharedTab(shared) });
+  }
+
+  observe({ cursor, tabId, maxDepth, maxTokens, debugSurfaces, probeHover, ...shared } = {}) {
+    return this.tool("observe", { cursor, tab_id: tabId, max_depth: maxDepth, max_tokens: maxTokens, debug_surfaces: debugSurfaces, probe_hover: probeHover, ...sharedTab(shared) });
   }
   snapshot({ tabId, maxDepth, maxTokens } = {}) {
     return this.tool("snapshot", { tab_id: tabId, max_depth: maxDepth, max_tokens: maxTokens });
@@ -47,41 +58,41 @@ export class BskSession {
   }
   screenshot(options) { return captureScreenshot(this, options); }
 
-  click(target, { button, clickCount, modifiers, tabId, timeoutMs } = {}) {
-    return this.tool("click", { ...resolveTarget(target), button, click_count: clickCount, modifiers, tab_id: tabId, timeout_ms: timeoutMs });
+  click(target, { button, clickCount, modifiers, tabId, timeoutMs, ...shared } = {}) {
+    return this.tool("click", { ...resolveTarget(target), button, click_count: clickCount, modifiers, tab_id: tabId, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
-  hover(target, { modifiers, settleMs, tabId, timeoutMs } = {}) {
-    return this.tool("hover", { ...resolveTarget(target), modifiers, settle_ms: settleMs, tab_id: tabId, timeout_ms: timeoutMs });
+  hover(target, { modifiers, settleMs, tabId, timeoutMs, ...shared } = {}) {
+    return this.tool("hover", { ...resolveTarget(target), modifiers, settle_ms: settleMs, tab_id: tabId, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
-  focus(target, { tabId, timeoutMs } = {}) {
-    return this.tool("focus", { ...resolveTarget(target), tab_id: tabId, timeout_ms: timeoutMs });
+  focus(target, { tabId, timeoutMs, ...shared } = {}) {
+    return this.tool("focus", { ...resolveTarget(target), tab_id: tabId, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
-  blur(target, { tabId, timeoutMs } = {}) {
-    return this.tool("blur", { ...resolveTarget(target), tab_id: tabId, timeout_ms: timeoutMs });
+  blur(target, { tabId, timeoutMs, ...shared } = {}) {
+    return this.tool("blur", { ...resolveTarget(target), tab_id: tabId, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
-  fill(target, value, { clearBefore, tabId, timeoutMs } = {}) {
-    return this.tool("fill", { ...resolveTarget(target), value, clear_before: clearBefore, tab_id: tabId, timeout_ms: timeoutMs });
+  fill(target, value, { clearBefore, tabId, timeoutMs, ...shared } = {}) {
+    return this.tool("fill", { ...resolveTarget(target), value, clear_before: clearBefore, tab_id: tabId, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
-  press(key, { target, modifiers, holdMs, tabId, timeoutMs } = {}) {
-    return this.tool("press", { key, ...optionalTarget(target), modifiers, hold_ms: holdMs, tab_id: tabId, timeout_ms: timeoutMs });
+  press(key, { target, modifiers, holdMs, tabId, timeoutMs, ...shared } = {}) {
+    return this.tool("press", { key, ...optionalTarget(target), modifiers, hold_ms: holdMs, tab_id: tabId, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
-  select(target, values, { tabId, timeoutMs } = {}) {
-    return this.tool("select", { ...resolveTarget(target), values: Array.isArray(values) ? values : [values], tab_id: tabId, timeout_ms: timeoutMs });
+  select(target, values, { tabId, timeoutMs, ...shared } = {}) {
+    return this.tool("select", { ...resolveTarget(target), values: Array.isArray(values) ? values : [values], tab_id: tabId, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
-  scrollTo(target, { tabId, timeoutMs } = {}) {
-    return this.tool("scroll_to", { ...resolveTarget(target), tab_id: tabId, timeout_ms: timeoutMs });
+  scrollTo(target, { tabId, timeoutMs, ...shared } = {}) {
+    return this.tool("scroll_to", { ...resolveTarget(target), tab_id: tabId, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
-  wheel({ deltaX = 0, deltaY = 0, target, modifiers, tabId, timeoutMs } = {}) {
-    return this.tool("wheel", { ...optionalTarget(target), delta_x: deltaX, delta_y: deltaY, modifiers, tab_id: tabId, timeout_ms: timeoutMs });
+  wheel({ deltaX = 0, deltaY = 0, target, modifiers, tabId, timeoutMs, ...shared } = {}) {
+    return this.tool("wheel", { ...optionalTarget(target), delta_x: deltaX, delta_y: deltaY, modifiers, tab_id: tabId, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
 
-  evaluate(expression, { tabId, awaitPromise, returnByValue, timeoutMs } = {}) {
-    return this.tool("evaluate", { expression, tab_id: tabId, await_promise: awaitPromise, return_by_value: returnByValue, timeout_ms: timeoutMs });
+  evaluate(expression, { tabId, awaitPromise, returnByValue, timeoutMs, ...shared } = {}) {
+    return this.tool("evaluate", { expression, tab_id: tabId, await_promise: awaitPromise, return_by_value: returnByValue, timeout_ms: timeoutMs, ...sharedTab(shared) });
   }
 
   tabList({ scope } = {}) { return this.tool("tab_list", { scope }); }
   tabCreate({ url, active, index } = {}) { return this.tool("tab_create", { url, active, index }); }
-  tabClose(tabId) { return this.tool("tab_close", { tab_id: tabId }); }
+  tabClose(tabId, shared = {}) { return this.tool("tab_close", { tab_id: tabId, ...sharedTab(shared) }); }
   tabSelect(tabId) { return this.tool("tab_select", { tab_id: tabId }); }
   tabBorrow(tabId, { confirmationTimeoutMs } = {}) {
     return this.tool("tab_borrow", { tab_id: tabId, confirmation_timeout_ms: confirmationTimeoutMs });
@@ -104,8 +115,8 @@ export class BskSession {
   network({ tabId, since, limit, maxTextChars } = {}) {
     return this.tool("network", { tab_id: tabId, since, limit, max_text_chars: maxTextChars });
   }
-  resize(width, height) { return this.tool("window_resize", { width, height }); }
-  emulate({ tabId, off, overrides } = {}) { return this.tool("emulate", { tab_id: tabId, off, overrides }); }
+  resize(width, height, shared = {}) { return this.tool("window_resize", { width, height, ...sharedTab(shared) }); }
+  emulate({ tabId, off, overrides, ...shared } = {}) { return this.tool("emulate", { tab_id: tabId, off, overrides, ...sharedTab(shared) }); }
 
   async stop() {
     if (this.#stopped) return null;
