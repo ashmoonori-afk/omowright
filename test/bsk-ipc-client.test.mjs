@@ -238,6 +238,37 @@ test("a daemon.json left by a daemon that no longer runs starts a new daemon ins
   } finally { await daemon.close(); rmSync(home, { recursive: true, force: true }); }
 });
 
+test("with auto-start disabled a stale daemon.json is named in the error instead of reported missing", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "bsk-stale-"));
+  const { writeFileSync } = await import("node:fs");
+  const staleSock = process.platform === "win32" ? "\\\\.\\pipe\\" + path.basename(home) : path.join(home, "run", "daemon.sock");
+  writeFileSync(path.join(home, "daemon.json"), JSON.stringify({ pid: process.pid, sock_path: staleSock, ws_port: 52800, version: "0.3.0-fake" }));
+  try {
+    const client = new BskIpcClient({ home, autoStart: false });
+    await assert.rejects(client.call("system.ping", {}), (err) => {
+      assert.ok(err instanceof BskRpcError);
+      assert.equal(err.code, "no_daemon");
+      assert.match(err.message, /no longer listening \((ENOENT|ECONNREFUSED)\)/);
+      return true;
+    });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// A client in another PID namespace (a container sharing BSK_HOME) sees a live daemon's pid as gone.
+test("a daemon.json whose pid this client cannot see still connects while its socket answers", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const daemon = await startFakeBskDaemon();
+  try {
+    const file = path.join(daemon.home, "daemon.json");
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), pid: spawnSync(process.execPath, ["-e", ""]).pid }));
+    let starts = 0;
+    const client = new BskIpcClient({ home: daemon.home, autoStart: true, startDaemon: async () => { starts += 1; } });
+    assert.deepEqual(await client.call("system.ping", {}), { pong: true });
+    assert.equal(starts, 0);
+  } finally { await daemon.close(); }
+});
+
 test("a tool call's own timeoutMs extends the IPC wait, so a long evaluate is not cut short (omo#10217)", async () => {
   const daemon = await startFakeBskDaemon({ handlers: { "tool.evaluate": () => ({ result: { ok: true, value: 1 } }) }, delayMs: 300 });
   try {
