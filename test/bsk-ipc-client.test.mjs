@@ -255,10 +255,14 @@ test("with auto-start disabled a stale daemon.json is named in the error instead
 });
 
 // A client in another PID namespace (a container sharing BSK_HOME) sees a live daemon's pid as gone.
+// The daemon listens off the default path, so the orphan probe cannot find it once daemon.json is dropped.
 test("a daemon.json whose pid this client cannot see still connects while its socket answers", async () => {
   const { spawnSync } = await import("node:child_process");
   const { readFileSync, writeFileSync } = await import("node:fs");
-  const daemon = await startFakeBskDaemon();
+  const daemon = await startFakeBskDaemon({
+    sockPathFor: (home) => process.platform === "win32" ? "\\\\.\\pipe\\fake-bsk-" + path.basename(home) : path.join(home, "run", "published.sock"),
+  });
+  assert.notEqual(daemon.sockPath, defaultSocketPath(daemon.home));
   try {
     const file = path.join(daemon.home, "daemon.json");
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), pid: spawnSync(process.execPath, ["-e", ""]).pid }));
