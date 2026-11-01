@@ -5,8 +5,13 @@ const SESSION_STOP_TIMEOUT_MS = 3_600_000;
 
 // BrowserSkill 0.4 refuses a page action (cooperation_sync_required) unless it
 // carries the single-use context_id of the latest tool.cooperate sync, and the
-// daemon never fills it in for the caller.
-function sharedTab({ context, dependsOn }) {
+// daemon never fills it in for the caller. Any other key left over after a method's own options
+// is a misspelling (for example `contextId`) that would otherwise send no context, so it throws.
+function sharedTab({ context, dependsOn, ...unknown }) {
+  const extra = Object.keys(unknown);
+  if (extra.length > 0) {
+    throw new TypeError(`unknown option ${extra.map((key) => JSON.stringify(key)).join(", ")}: a shared-tab action takes { context, dependsOn } besides its own options`);
+  }
   return { context_id: context, depends_on: dependsOn };
 }
 
