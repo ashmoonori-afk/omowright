@@ -3,6 +3,7 @@ import {
   mkdir,
   open,
   readFile,
+  unlink,
 } from "node:fs/promises";
 import { globSync } from "node:fs";
 import os from "node:os";
@@ -95,7 +96,13 @@ async function writeMetadata(metadataPath, fingerprintSeed) {
   } finally {
     await handle.close();
   }
-  await restrictToOwner(metadataPath, "file");
+  try {
+    await restrictToOwner(metadataPath, "file");
+  } catch (error) {
+    // Fail closed: never leave a fresh seed file under the inherited ACL.
+    await unlink(metadataPath).catch(() => {});
+    throw error;
+  }
 }
 
 export async function resolveCloakProfile({
