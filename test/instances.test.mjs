@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
 import { connectNamed, listInstances } from "../src/instances.js";
+import { readEvents } from "./fixtures/browser-lifecycle.mjs";
 import { reclaimLock, withLock } from "../src/instance-lock.js";
 
 const fixture = fileURLToPath(
@@ -173,6 +174,111 @@ test("connectNamed attaches to a healthy registered browser", async () => {
   } finally {
     await connection?.close().catch(() => {});
     await stopChild(fake.child);
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+// Contract owner: how a launched named browser is closed. It is asked over CDP
+// first (the only quit request Windows has, and the clean quit Chrome needs),
+// falls back to the signal path when it does not quit, and a browser that is
+// already gone is never asked, so close() cannot ask whatever process holds
+// its freed port by then to quit.
+function namedLaunchOptions(registryRoot, env) {
+  return {
+    registryRoot,
+    browserPath: process.execPath,
+    browserArgs: [fixture],
+    spawnOptions: { env: { ...process.env, ...env } },
+  };
+}
+
+test("closing a launched named browser asks it to quit over CDP", { timeout: 20_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  const logPath = path.join(registryRoot, "signals.log");
+  let connection;
+  try {
+    connection = await connectNamed("asked", namedLaunchOptions(registryRoot, { FAKE_SIGNAL_LOG: logPath }));
+    const child = connection.browserProcess;
+    const exit = once(child, "exit");
+    await connection.close();
+    connection = null;
+    const [code, signal] = await exit;
+    assert.deepEqual(readEvents(logPath).map(({ event }) => event), ["CLOSE"]);
+    assert.deepEqual({ code, signal }, { code: 0, signal: null });
+  } finally {
+    await connection?.close().catch(() => {});
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+test("closing a named browser that ignores Browser.close still ends it", { timeout: 30_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  const logPath = path.join(registryRoot, "signals.log");
+  let connection;
+  try {
+    connection = await connectNamed(
+      "stubborn",
+      namedLaunchOptions(registryRoot, { FAKE_SIGNAL_LOG: logPath, FAKE_ON_CLOSE: "ignore" }),
+    );
+    const child = connection.browserProcess;
+    const exit = once(child, "exit");
+    await connection.close();
+    connection = null;
+    await exit;
+    const events = readEvents(logPath).map(({ event }) => event);
+    // POSIX asks again with SIGTERM; on Windows no signal can ask, so the
+    // browser is terminated after the grace window instead.
+    assert.deepEqual(events, process.platform === "win32" ? ["CLOSE"] : ["CLOSE", "TERM"]);
+  } finally {
+    await connection?.close().catch(() => {});
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+test("closing a named browser that already died never asks the process on its freed port to quit", { timeout: 20_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  let connection;
+  let stranger;
+  let sockets;
+  try {
+    connection = await connectNamed("gone", namedLaunchOptions(registryRoot, {}));
+    const { endpoint } = JSON.parse(await readFile(path.join(registryRoot, "gone.json"), "utf8"));
+    const child = connection.browserProcess;
+    const exit = once(child, "exit");
+    child.kill("SIGKILL");
+    await exit;
+    // Another process takes the freed port, as any local process may, and
+    // answers CDP there. (The client's own background reconnect may reach it;
+    // what close() must never do is ask it to quit.)
+    const port = Number(new URL(endpoint).port);
+    const methods = [];
+    stranger = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/stranger` }));
+    });
+    sockets = new WebSocketServer({ noServer: true });
+    stranger.on("upgrade", (req, socket, head) => {
+      sockets.handleUpgrade(req, socket, head, (webSocket) => {
+        webSocket.on("message", (data) => {
+          const message = JSON.parse(data.toString());
+          methods.push(message.method);
+          webSocket.send(JSON.stringify({ id: message.id, result: {} }));
+        });
+      });
+    });
+    stranger.listen(port, "127.0.0.1");
+    await once(stranger, "listening");
+
+    await connection.close();
+    connection = null;
+
+    assert.equal(methods.includes("Browser.close"), false, `the stranger on the freed port received ${methods.join(", ")}`);
+  } finally {
+    await connection?.close().catch(() => {});
+    for (const client of sockets?.clients ?? []) client.terminate();
+    sockets?.close();
+    stranger?.closeAllConnections();
+    await new Promise((resolve) => (stranger?.listening ? stranger.close(resolve) : resolve()));
     await rm(registryRoot, { recursive: true, force: true });
   }
 });

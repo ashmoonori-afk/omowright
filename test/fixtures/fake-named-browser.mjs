@@ -1,7 +1,15 @@
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import { WebSocketServer } from "ws";
+
+// FAKE_SIGNAL_LOG names a file that receives "CLOSE <epoch ms>" for each
+// Browser.close and "TERM <epoch ms>" for SIGTERM. Like Chrome it quits after
+// answering Browser.close; FAKE_ON_CLOSE=ignore keeps it running.
+const signalLog = process.env.FAKE_SIGNAL_LOG;
+const record = (event) => {
+  if (signalLog) appendFileSync(signalLog, `${event} ${Date.now()}\n`);
+};
 
 const target = {
   description: "",
@@ -54,6 +62,13 @@ webSockets.on("connection", (webSocket) => {
       return;
     }
     if (typeof message.id !== "number") return;
+    if (message.method === "Browser.close") {
+      record("CLOSE");
+      const reply = JSON.stringify({ id: message.id, result: {} });
+      if (process.env.FAKE_ON_CLOSE === "ignore") webSocket.send(reply);
+      else webSocket.send(reply, shutdown);
+      return;
+    }
     const result = message.method === "Browser.getVersion"
       ? { product: "FakeNamedBrowser/1.0", protocolVersion: "1.3" }
       : {};
@@ -69,7 +84,10 @@ function shutdown() {
 }
 
 process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
+process.once("SIGTERM", () => {
+  record("TERM");
+  shutdown();
+});
 
 function flag(name) {
   const prefix = `--${name}=`;
