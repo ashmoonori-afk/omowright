@@ -171,3 +171,22 @@ test("connectBrowserSkill refuses to continue when no browser is attached instea
   });
   assert.equal(client.calls.some((c) => c.method === "session.start"), false);
 });
+
+// Public API contract: { browser } accepts the browser id bskDoctor reports ("chrome"), and the daemon's
+// session.start accepts only an instance id or a unique label, so the name is sent as its instance id.
+test("connectBrowserSkill sends a browser name as the instance id of the one connected browser with it", async () => {
+  const browsers = [{ instance_id: "05394bb7", browser_name: "chrome", label: "" }, { instance_id: "e1", browser_name: "edge", label: "work" }];
+  const startWith = async (browser) => {
+    const client = stubClient({ "system.status": { browsers }, "session.start": (params) => ({ session_id: "s", browser_instance_id: params.browser_instance_id }) });
+    await connectBrowserSkill({ client, browser });
+    return client.calls.find((c) => c.method === "session.start").params.browser_instance_id;
+  };
+  assert.equal(await startWith("chrome"), "05394bb7");
+  assert.equal(await startWith("05394bb7"), "05394bb7");
+  assert.equal(await startWith("work"), "work");
+  assert.equal(await startWith("brave"), "brave", "an unknown name still reaches the daemon, which reports it not connected");
+
+  const twoChromes = stubClient({ "system.status": { browsers: [{ instance_id: "a", browser_name: "chrome" }, { instance_id: "b", browser_name: "chrome" }] } });
+  await assert.rejects(connectBrowserSkill({ client: twoChromes, browser: "chrome" }), (err) => err.code === "invalid_params" && /a, b/.test(err.message));
+  assert.equal(twoChromes.calls.some((c) => c.method === "session.start"), false);
+});

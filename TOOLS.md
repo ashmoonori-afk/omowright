@@ -167,7 +167,9 @@ loop; the module files next to it are implementation detail.
 
 - `connectBrowserSkill({ name, browser, width, height, focused, home, sockPath,
   autoStart, timeoutMs })`: starts a session in the user's own browser through
-  the BrowserSkill daemon's IPC socket and returns a `BskSession`. Throws
+  the BrowserSkill daemon's IPC socket and returns a `BskSession`. `browser`
+  takes an instance id, a unique label, or a browser name such as `"chrome"`
+  that exactly one connected browser carries. Throws
   `BskRpcError` `no_browser_connected` when no extension is attached; never
   launches a browser of its own.
 - `BskSession`: `navigate`, `back`, `forward`, `reload`, `observe`, `snapshot`,
