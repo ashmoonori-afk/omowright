@@ -222,3 +222,63 @@ test("the one browser whose extension is connected wins over a default browser t
     assert.equal(report.ready, true);
   } finally { await daemon.close(); rmSync(home, { recursive: true, force: true }); }
 });
+
+// BrowserSkill's extension names its browser from navigator.userAgent, and every Chromium fork that keeps
+// Chrome's user agent (Brave, Arc, Vivaldi, ...) reports "chrome". Such a name is evidence only when
+// exactly one browser that could have sent it is running.
+test("a Chromium fork whose extension reports itself as chrome is not taken for Chrome", async () => {
+  const home = macHome(["chrome", "edge", "brave"]);
+  const connected = [{ instance_id: "05394bb7", browser_name: "chrome", browser_version: "156" }];
+  const daemon = await startFakeBskDaemon({ handlers: { "system.status": () => ({ result: { daemon_version: "0.4.1-fake", protocol_version: "1.8", browsers: connected, sessions: [] } }) } });
+  try {
+    const report = await bskDoctor({
+      platform: "darwin", home, client: new BskIpcClient({ home: daemon.home, autoStart: false }), bskBin: null, exists: homeOnly(home), now: NOW,
+      signals: { defaultBrowser: "com.microsoft.edgemac", running: [app("Brave Browser")], lastUsed: { chrome: NOW - DAY, edge: NOW - DAY, brave: NOW - DAY } },
+    });
+    assert.equal(report.primary.id, "brave", "the only running browser that sends Chrome's user agent is the one connected");
+    assert.equal(report.identification.confidence, "connected");
+  } finally { await daemon.close(); rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a connected chrome name with several or no running candidates proves nothing and falls back to the signals", () => {
+  const home = macHome(["chrome", "edge", "brave"]);
+  try {
+    const lastUsed = { chrome: NOW - DAY, edge: NOW - DAY, brave: NOW - DAY };
+    const both = identifyBrowser({ catalog: macCatalog(home), now: NOW, connected: ["chrome"], signals: { defaultBrowser: "com.microsoft.edgemac", running: [app("Google Chrome"), app("Brave Browser"), app("Microsoft Edge")], lastUsed } });
+    assert.equal(both.primaryId, "edge");
+    assert.equal(both.confidence, "default-and-in-use");
+    const unreadable = identifyBrowser({ catalog: macCatalog(home), now: NOW, connected: ["chrome"], signals: { defaultBrowser: "com.microsoft.edgemac", running: null, lastUsed } });
+    assert.equal(unreadable.primaryId, "edge");
+    assert.equal(unreadable.confidence, "default-and-in-use");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a running Edge does not make a chrome name ambiguous, since Edge always reports edge", () => {
+  const home = macHome(["chrome", "edge"]);
+  try {
+    const result = identifyBrowser({ catalog: macCatalog(home), now: NOW, connected: ["chrome"], signals: { defaultBrowser: "com.microsoft.edgemac", running: [app("Google Chrome"), app("Microsoft Edge")], lastUsed: { chrome: NOW - DAY, edge: NOW - DAY } } });
+    assert.equal(result.primaryId, "chrome");
+    assert.equal(result.confidence, "connected");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a name only one browser sends counts without a running signal; two connected browsers fall back to the signals", () => {
+  const home = macHome(["chrome", "edge", "opera"]);
+  try {
+    const edge = identifyBrowser({ catalog: macCatalog(home), now: NOW, connected: ["edge"], signals: { defaultBrowser: "com.google.chrome", running: null, lastUsed: { chrome: NOW - DAY } } });
+    assert.equal(edge.primaryId, "edge");
+    assert.equal(edge.confidence, "connected");
+    const two = identifyBrowser({ catalog: macCatalog(home), now: NOW, connected: ["edge", "opera"], signals: { defaultBrowser: "com.google.chrome", running: [app("Google Chrome")], lastUsed: { chrome: NOW - DAY } } });
+    assert.equal(two.primaryId, "chrome");
+    assert.equal(two.confidence, "default-and-in-use");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a connected browser that is not installed is not picked", () => {
+  const home = macHome(["chrome", "brave"]);
+  try {
+    const result = identifyBrowser({ catalog: macCatalog(home), now: NOW, connected: ["edge"], signals: { defaultBrowser: "com.brave.browser", running: [app("Brave Browser")], lastUsed: { brave: NOW - DAY } } });
+    assert.equal(result.primaryId, "brave");
+    assert.equal(result.confidence, "default-and-in-use");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

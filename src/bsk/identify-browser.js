@@ -2,6 +2,21 @@ import { NON_CHROMIUM_DEFAULTS } from "./browsers.js";
 
 export const RECENT_USE_MS = 7 * 24 * 60 * 60 * 1000;
 
+// BrowserSkill's extension derives browser_name from the user agent (detectBrowserMeta in
+// Tencent/BrowserSkill apps/extension/src/transport/handshake.ts). Only a user-agent token names one
+// browser; forks such as Brave and Arc normally keep Chrome's user agent and report "chrome", so
+// "chrome"/"chromium" count only when exactly one browser able to send them is running.
+const OWN_TOKEN_NAMES = new Set(["edge", "opera", "brave", "arc"]);
+const FAMILY_NAMES = new Set(["chrome", "chromium"]);
+const ALWAYS_SEND_OWN_TOKEN = new Set(["edge", "opera"]);
+
+function sentBy(name, candidates) {
+  if (OWN_TOKEN_NAMES.has(name)) return candidates.filter((c) => c.id === name);
+  if (!FAMILY_NAMES.has(name)) return [];
+  const running = candidates.filter((c) => !ALWAYS_SEND_OWN_TOKEN.has(c.id) && c.running === true);
+  return running.length === 1 ? running : [];
+}
+
 function matchesDefault(browser, defaultId) {
   if (!defaultId) return false;
   return browser.defaultIds.some((id) => defaultId === id || defaultId.startsWith(id));
@@ -49,7 +64,7 @@ export function identifyBrowser({ catalog, signals = {}, explicit = null, connec
   }
   if (candidates.length === 0) return ask(candidates, "no Chromium-family browser is installed", defaultBrowser);
 
-  const attached = candidates.filter((c) => connected.includes(c.id));
+  const attached = [...new Set(connected.flatMap((name) => sentBy(name, candidates)))];
   if (attached.length === 1) return choose(candidates, attached[0], "connected", `${attached[0].label} has the BrowserSkill extension connected`, defaultBrowser);
 
   const inUse = candidates.filter((c) => c.running || c.recentlyUsed);

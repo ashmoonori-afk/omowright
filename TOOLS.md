@@ -195,10 +195,11 @@ loop; the module files next to it are implementation detail.
   has to name the browser. While the daemon is down nothing is registered,
   `humanStep` is `null`, and `nextStep` says how to start the daemon; otherwise
   `nextStep` is the same step as `humanStep` (`null` once ready).
-- `identifyBrowser({ catalog, signals, explicit })` / `probeBrowserSignals()` /
-  `catalogBrowsers()` / `detectBrowsers()`: the browser choice on its own —
-  default browser, running process and recent-use signals, ranked; ambiguity
-  returns `needsChoice` instead of a guess.
+- `identifyBrowser({ catalog, signals, explicit, connected })` /
+  `probeBrowserSignals()` / `catalogBrowsers()` / `detectBrowsers()`: the
+  browser choice on its own — the daemon's connected `browser_name`s, default
+  browser, running process and recent-use signals, ranked; ambiguity returns
+  `needsChoice` instead of a guess.
 - `BskIpcClient` / `BskRpcError` / `readDaemonInfo` / `resolveBskHome`: the
   raw JSON Lines IPC client (`call`, `callWithHandle`, `cancel`) for daemon
   methods the session does not wrap.
