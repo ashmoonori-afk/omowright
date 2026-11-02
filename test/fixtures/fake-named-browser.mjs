@@ -1,4 +1,4 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, writeSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import { WebSocketServer } from "ws";
@@ -101,10 +101,15 @@ server.listen(0, "127.0.0.1", () => {
   const port = server.address().port;
   const userDataDir = flag("user-data-dir");
   if (userDataDir) {
-    writeFileSync(
-      path.join(userDataDir, "DevToolsActivePort"),
-      `${flag("fake-active-port") ?? port}\n/devtools/browser/fake`,
-    );
+    // Truncated at open, then written, as Chromium does. bun's writeFileSync
+    // rewrites an existing file in place on Linux, which lets a concurrent
+    // reader see the new bytes over the old file's tail (#107).
+    const fd = openSync(path.join(userDataDir, "DevToolsActivePort"), "w");
+    try {
+      writeSync(fd, `${flag("fake-active-port") ?? port}\n/devtools/browser/fake`);
+    } finally {
+      closeSync(fd);
+    }
   }
   if (!process.argv.includes("--fake-quiet")) {
     process.stderr.write(
