@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isPidAlive } from "./instance-lock.js";
-import { processStartTime } from "./lock-file.js";
+import { ownProcessStartTime, processStartTime } from "./lock-file.js";
 
 export const TERM_GRACE_MS = 5_000;
 const PID_FILE_NAME = "omowright-browser.pid";
@@ -50,7 +50,7 @@ function pidFilePath(profileDir) {
 // --user-data-dir (Chrome itself is happy with a dir that already exists).
 export async function writeBrowserPidFile(profileDir, pid) {
   if (!profileDir || !pid) return;
-  const [start, ownerStart] = await Promise.all([processStartTime(pid), processStartTime(process.pid)]);
+  const [start, ownerStart] = await Promise.all([processStartTime(pid), ownProcessStartTime()]);
   mkdirSync(profileDir, { recursive: true });
   const record = { pid, start, profileDir, owner: { pid: process.pid, start: ownerStart } };
   writeFileSync(pidFilePath(profileDir), `${JSON.stringify(record)}\n`, { mode: 0o600 });

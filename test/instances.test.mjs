@@ -504,7 +504,10 @@ test("connectNamed treats an identity-less lock as held until it ages out", asyn
 // Contract owner: what counts as an abandoned lock. A live pid alone is not the
 // holder: once the holder dies its pid can be handed to an unrelated process,
 // and a pid-only check would keep the name locked until that process exits.
-test("connectNamed reclaims a lock whose pid now belongs to another process", async () => {
+// Each start-time lookup is one PowerShell call on Windows (about a second on
+// a CI runner), and this case makes two before it can reclaim, so the budgets
+// leave room for that; a lock that is never reclaimed still fails the case.
+test("connectNamed reclaims a lock whose pid now belongs to another process", { timeout: 60_000 }, async () => {
   const registryRoot = await mkdtemp(
     path.join(tmpdir(), "omowright-instances-"),
   );
@@ -527,7 +530,7 @@ test("connectNamed reclaims a lock whose pid now belongs to another process", as
       registryRoot,
       browserPath: process.execPath,
       browserArgs: [fixture],
-      lockTimeoutMs: 3_000,
+      lockTimeoutMs: 20_000,
     });
 
     assert.equal(connection.browserProcess?.pid > 0, true);
