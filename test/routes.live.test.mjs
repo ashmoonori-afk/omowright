@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, globSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { connectPipe, createAgentTabs } from "../src/index.js";
 import { createRoutes } from "../src/routes.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -84,7 +85,7 @@ test("live abort of png fires img onerror", { skip: !SHELL && "no chromium binar
     await routes.dispose();
   } finally {
     await connection.close();
-    rmSync(ud, { recursive: true, force: true, maxRetries: 10 });
+    removeTreeSync(ud);
     await new Promise(resolve => server.close(resolve));
   }
 });
@@ -110,7 +111,7 @@ test("live fulfill mocks /api/x json even when the server returns 404", { skip: 
     await routes.dispose();
   } finally {
     await connection.close();
-    rmSync(ud, { recursive: true, force: true, maxRetries: 10 });
+    removeTreeSync(ud);
     await new Promise(resolve => server.close(resolve));
   }
 });

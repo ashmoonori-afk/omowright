@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   connectCloakProfile,
   findCloakBrowserPath,
 } from "../src/index.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 async function withSmokeServer(run) {
   const profileDir = mkdtempSync(path.join(tmpdir(), "omowright-cloak-e2e-"));
@@ -20,7 +21,7 @@ async function withSmokeServer(run) {
     await run({ profileDir, url: `http://127.0.0.1:${server.address().port}/` });
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    rmSync(profileDir, { recursive: true, force: true, maxRetries: 10 });
+    removeTreeSync(profileDir);
   }
 }
 

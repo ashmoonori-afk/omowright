@@ -7,11 +7,12 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, existsSync, globSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { CdpClient, OMOWRIGHT_PAGE_CDP_METHODS, compactSnapshot, connect, createAgentTabs } from "../src/index.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -151,7 +152,7 @@ test("the page API runs through an endpoint that allows only OMOWRIGHT_PAGE_CDP_
     upstream.child.kill();
     await exited;
     site.close();
-    rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10 });
+    removeTreeSync(userDataDir);
   }
 });
 

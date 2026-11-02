@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, globSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, globSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { connectPipe, createAgentTabs, createCaptcha } from "../../src/index.js";
+import { removeTreeSync } from "./remove-tree.mjs";
 
 const html = `<!doctype html><html><body style="font:20px sans-serif;margin:40px">
 <h1>CAPTCHA interaction fixture</h1>
@@ -123,7 +124,7 @@ export async function runScenario(scenario, evidenceDir) {
     throw error;
   } finally {
     if (browser) await browser.close();
-    rmSync(profile, { recursive: true, force: true, maxRetries: 10 });
+    removeTreeSync(profile);
     if (evidenceDir) {
       writeFileSync(path.join(evidenceDir, "surface.json"), JSON.stringify(result, null, 2));
       writeFileSync(path.join(evidenceDir, "cleanup.json"), JSON.stringify({ browserClosed: Boolean(browser), profileRemoved: !existsSync(profile), profile }, null, 2));
