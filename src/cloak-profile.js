@@ -1,14 +1,15 @@
 import { randomInt } from "node:crypto";
 import {
-  chmod,
   mkdir,
   open,
   readFile,
+  unlink,
 } from "node:fs/promises";
 import { globSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { connectNamed, listInstances, withEngineLock } from "./instances.js";
+import { restrictToOwner } from "./owner-only.js";
 import { connectPipe } from "./pipe.js";
 
 const LEGACY_CLOAK_PROBE_URL = "http://127.0.0.1:9242";
@@ -95,7 +96,13 @@ async function writeMetadata(metadataPath, fingerprintSeed) {
   } finally {
     await handle.close();
   }
-  await chmod(metadataPath, 0o600);
+  try {
+    await restrictToOwner(metadataPath, "file");
+  } catch (error) {
+    // Fail closed: never leave a fresh seed file under the inherited ACL.
+    await unlink(metadataPath).catch(() => {});
+    throw error;
+  }
 }
 
 export async function resolveCloakProfile({
@@ -106,7 +113,7 @@ export async function resolveCloakProfile({
   const resolvedProfile = path.resolve(profileDir);
   const metadataPath = path.join(resolvedProfile, METADATA_FILE);
   await mkdir(resolvedProfile, { recursive: true, mode: 0o700 });
-  await chmod(resolvedProfile, 0o700);
+  await restrictToOwner(resolvedProfile, "directory");
 
   const requested = fingerprintSeed === undefined
     ? null
@@ -133,7 +140,7 @@ export async function resolveCloakProfile({
     );
   }
 
-  await chmod(metadataPath, 0o600);
+  await restrictToOwner(metadataPath, "file");
 
   return {
     profileDir: resolvedProfile,

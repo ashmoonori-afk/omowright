@@ -24,6 +24,7 @@ import { WebSocketServer } from "ws";
 import { connectNamed, listInstances } from "../src/instances.js";
 import { readEvents } from "./fixtures/browser-lifecycle.mjs";
 import { reclaimLock, withLock } from "../src/instance-lock.js";
+import { assertOwnerOnly } from "./fixtures/owner-only.mjs";
 
 const fixture = fileURLToPath(
   new URL("./fixtures/fake-named-browser.mjs", import.meta.url),
@@ -283,7 +284,8 @@ test("closing a named browser that already died never asks the process on its fr
   }
 });
 
-test("connectNamed replaces a dead-pid record with one launched browser", async () => {
+// Budget: the owner-only check reads ACLs through PowerShell on Windows.
+test("connectNamed replaces a dead-pid record with one launched browser", { timeout: 60_000 }, async () => {
   const registryRoot = await mkdtemp(
     path.join(tmpdir(), "omowright-instances-"),
   );
@@ -317,8 +319,7 @@ test("connectNamed replaces a dead-pid record with one launched browser", async 
     assert.notEqual(rewritten.endpoint, "http://127.0.0.1:1");
     assert.equal(rewritten.profileDir, profileDir);
     assert.equal(rewritten.browserPath, process.execPath);
-    assert.equal((await stat(registryRoot)).mode & 0o777, 0o700);
-    assert.equal((await stat(recordPath)).mode & 0o777, 0o600);
+    await assertOwnerOnly([registryRoot, "directory"], [recordPath, "file"]);
     const launchedPid = connection.browserProcess.pid;
     await connection.close();
     connection = null;
@@ -973,7 +974,8 @@ test("connectNamed gives up when the holder's WebSocket upgrade hangs", async ()
   }
 });
 
-test("listInstances reports versioned records with liveness metadata", async () => {
+// Budget: the owner-only check reads ACLs through PowerShell on Windows.
+test("listInstances reports versioned records with liveness metadata", { timeout: 60_000 }, async () => {
   const registryRoot = await mkdtemp(
     path.join(tmpdir(), "omowright-instances-"),
   );
@@ -1025,10 +1027,7 @@ test("listInstances reports versioned records with liveness metadata", async () 
     assert.equal(instances[0].responsive, true);
     assert.equal(instances[1].alive, false);
     assert.equal(instances[1].responsive, false);
-    assert.equal(
-      (await stat(path.join(registryRoot, "alive.json"))).mode & 0o777,
-      0o600,
-    );
+    await assertOwnerOnly([path.join(registryRoot, "alive.json"), "file"]);
   } finally {
     await stopChild(fake.child);
     await rm(registryRoot, { recursive: true, force: true });

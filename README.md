@@ -204,7 +204,9 @@ ship as the `toolSchemas` export.
 
 For long-lived authenticated work, use `connectCloakProfile()` or the bundled
 `omowright-cloak` launcher. The first run stores a random fingerprint seed in
-`.omowright-cloak.json` (mode `0600`) inside the private profile (mode `0700`);
+`.omowright-cloak.json` (mode `0600`) inside the private profile (mode `0700`;
+on Windows, an ACL that grants only the current user and the system's
+administrators);
 later runs reuse it and reject a conflicting seed. Never copy Google or
 1Password cookies between profiles. Full lifecycle:
 [`docs/cloakbrowser-persistent-profile.md`](docs/cloakbrowser-persistent-profile.md).
