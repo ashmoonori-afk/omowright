@@ -33,8 +33,14 @@ async function serveFixturePage() {
   return { server, url: `http://127.0.0.1:${server.address().port}/` };
 }
 
-// Linux reads /proc directly (lsof is often absent there); elsewhere lsof exits 1 when nothing matches.
+// Linux reads /proc directly (lsof is often absent there); Windows has no lsof, so it asks the TCP stack
+// through Get-NetTCPConnection (IPv4 and IPv6, locale-independent, empty when nothing listens); macOS lsof exits 1
+// when nothing matches.
 function listeningTcpSockets(pid) {
+  if (process.platform === "win32") {
+    const script = `Get-NetTCPConnection -State Listen -OwningProcess ${pid} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" }`;
+    return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" }).trim().split(/\r?\n/).filter(Boolean);
+  }
   if (process.platform !== "linux") {
     try {
       return execFileSync("lsof", ["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-p", String(pid)], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
