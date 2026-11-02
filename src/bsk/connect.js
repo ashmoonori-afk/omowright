@@ -9,6 +9,18 @@ export async function listBrowsers(client, { waitForBrowserMs } = {}) {
   return status.browsers ?? [];
 }
 
+// session.start matches only an instance id or a unique label; a browser name such as "chrome"
+// (what bskDoctor reports) maps to the one connected browser with that name.
+function resolveBrowser(browser, browsers) {
+  if (browser === undefined || browser === null) return browser;
+  if (browsers.some((b) => b.instance_id === browser || (b.label && b.label === browser))) return browser;
+  const named = browsers.filter((b) => b.browser_name === browser);
+  if (named.length > 1) {
+    throw new BskRpcError("invalid_params", `browser "${browser}" matches ${named.length} connected browsers (${named.map((b) => b.instance_id).join(", ")}); pass the instance id instead`);
+  }
+  return named.length === 1 ? named[0].instance_id : browser;
+}
+
 export async function connectBrowserSkill({
   client, home, env, sockPath, autoStart, timeoutMs, bskBin,
   name, browser, width, height, focused = false,
@@ -21,7 +33,7 @@ export async function connectBrowserSkill({
   }
   const started = await ipc.call("session.start", compact({
     task_name: name,
-    browser_instance_id: browser,
+    browser_instance_id: resolveBrowser(browser, browsers),
     width, height, focused,
   }), { idPrefix: "session-start" });
   return new BskSession(ipc, {
