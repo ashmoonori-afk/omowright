@@ -1,7 +1,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startDaemonWithCli, windowsDaemonTaskName } from "../src/bsk/daemon-info.js";
@@ -35,6 +35,26 @@ function unregister(tasks) {
   powershell(`${tasks.map((task) => `Unregister-ScheduledTask -TaskName '${task}' -Confirm:$false -ErrorAction SilentlyContinue`).join("; ")}; exit 0`);
 }
 
+async function waitForMarker(marker, deadline) {
+  if (existsSync(marker)) return;
+  const watcher = watch(path.dirname(marker));
+  try {
+    await new Promise((resolve, reject) => {
+      let timer;
+      const check = () => {
+        clearTimeout(timer);
+        if (existsSync(marker) || Date.now() >= deadline) return resolve();
+        timer = setTimeout(check, Math.min(1000, deadline - Date.now()));
+      };
+      watcher.on("change", check);
+      watcher.on("error", (error) => { clearTimeout(timer); reject(error); });
+      check();
+    });
+  } finally {
+    watcher.close();
+  }
+}
+
 before(() => {
   if (process.platform !== "win32") return;
   dir = mkdtempSync(path.join(tmpdir(), "bsk-task-"));
@@ -64,7 +84,7 @@ for (const name of ["Tom&Jerry (x) ^ ;", "100% %PATH% home", "O'Brien", "O\u2019
       assert.match(args, /^--headless powershell\.exe -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
       const marker = path.join(home, "started.txt");
       const deadline = Date.now() + 15_000;
-      while (!existsSync(marker) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 200));
+      await waitForMarker(marker, deadline);
       assert.equal(readFileSync(marker, "utf8"), "daemon start --foreground");
     } finally {
       unregister([task]);
