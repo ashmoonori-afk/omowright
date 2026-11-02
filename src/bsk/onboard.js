@@ -48,11 +48,11 @@ function withRegistration(platform, browser) {
   return { ...browser, registration: entry, extensionRegistered };
 }
 
-async function identify({ platform, home, env, exists, browser, signals, probeSignals, now }) {
+async function identify({ platform, home, env, exists, browser, connected, signals, probeSignals, now }) {
   const catalog = catalogBrowsers({ platform, home, env, exists }).map((b) => withRegistration(platform, b));
   const observed = signals ?? await probeSignals({ platform, home, browsers: catalog.filter((b) => b.hasProfile) });
   const explicit = browser ?? env.OMOWRIGHT_BROWSER ?? null;
-  const { primary, ...identification } = identifyBrowser({ catalog, signals: observed, explicit: explicit || null, now });
+  const { primary, ...identification } = identifyBrowser({ catalog, signals: observed, explicit: explicit || null, connected, now });
   const browsers = catalog.filter((b) => b.installed);
   const registeredElsewhere = browsers.filter((b) => b.extensionRegistered && b.id !== identification.primaryId).map((b) => b.id);
   return { browsers, identification: { ...identification, registeredElsewhere }, primary };
@@ -81,7 +81,7 @@ export async function bskDoctor({
   const cli = await cliReport({ bskBin, env, cliVersion });
   const ipc = client ?? new BskIpcClient({ env, bskBin: cli.bskBin ?? undefined, autoStart: false });
   const daemon = await daemonReport(ipc, waitForBrowserMs);
-  const { browsers, identification, primary } = await identify({ platform, home, env, exists, browser, signals, probeSignals, now });
+  const { browsers, identification, primary } = await identify({ platform, home, env, exists, browser, connected: daemon.browsers.map((b) => b.browser_name), signals, probeSignals, now });
   const browsersConnected = daemon.browsers;
   const report = { cli, daemon, browsers, primary: primary ?? null, identification, browsersConnected, ready: browsersConnected.length > 0 };
   report.nextStep = nextStepFor(report);
@@ -102,7 +102,7 @@ export async function bskOnboard({
   }
   const ipc = client ?? new BskIpcClient({ env, bskBin: cli.bskBin ?? undefined, autoStart: true });
   let daemon = await daemonReport(ipc, 0);
-  const { browsers, identification, primary } = await identify({ platform, home, env, exists, browser, signals, probeSignals, now });
+  const { browsers, identification, primary } = await identify({ platform, home, env, exists, browser, connected: daemon.browsers.map((b) => b.browser_name), signals, probeSignals, now });
   const registrations = [];
   let humanStep = null;
   let needsChoice = false;

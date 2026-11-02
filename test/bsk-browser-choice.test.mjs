@@ -205,3 +205,20 @@ test("bskDoctor reports the identified browser and registrations an older onboar
     });
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+// Default contract: the browser the extension already runs in is the user's browser. A default the
+// user does not drive (Edge on Windows) must not redirect onboarding or the doctor's report away from it.
+test("the one browser whose extension is connected wins over a default browser that is also in use", async () => {
+  const home = macHome(["chrome", "edge"]);
+  const connected = [{ instance_id: "05394bb7", browser_name: "chrome", browser_version: "156" }];
+  const daemon = await startFakeBskDaemon({ handlers: { "system.status": () => ({ result: { daemon_version: "0.4.1-fake", protocol_version: "1.8", browsers: connected, sessions: [] } }) } });
+  try {
+    const report = await bskDoctor({
+      platform: "darwin", home, client: new BskIpcClient({ home: daemon.home, autoStart: false }), bskBin: null, exists: homeOnly(home), now: NOW,
+      signals: { defaultBrowser: "com.microsoft.edgemac", running: [app("Google Chrome")], lastUsed: { chrome: NOW - DAY, edge: NOW - DAY } },
+    });
+    assert.equal(report.primary.id, "chrome");
+    assert.equal(report.identification.confidence, "connected");
+    assert.equal(report.ready, true);
+  } finally { await daemon.close(); rmSync(home, { recursive: true, force: true }); }
+});

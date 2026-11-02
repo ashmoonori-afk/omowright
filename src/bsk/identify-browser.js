@@ -33,10 +33,11 @@ function ask(candidates, reason, defaultBrowser, suggested = null) {
 }
 
 // Picks the one Chromium browser the user actually uses, or refuses to pick. Order of authority: an
-// explicit choice, the OS default browser when it is also in use (or nothing else is), a single
-// browser that is the only one in use. Anything else — a default the user is not using while another
-// browser runs, a Safari/Firefox default, several browsers in use — is a question for the user.
-export function identifyBrowser({ catalog, signals = {}, explicit = null, now = Date.now() }) {
+// explicit choice, the one browser whose BrowserSkill extension is connected to the daemon, the OS
+// default browser when it is also in use (or nothing else is), a single browser that is the only one
+// in use. Anything else — a default the user is not using while another browser runs, a Safari/Firefox
+// default, several browsers in use — is a question for the user.
+export function identifyBrowser({ catalog, signals = {}, explicit = null, connected = [], now = Date.now() }) {
   const defaultBrowser = describeDefault(signals.defaultBrowser ?? null, catalog);
   const installed = catalog.filter((b) => b.installed || b.id === explicit);
   const candidates = installed.map((b) => candidateRow(b, { defaultBrowser, running: signals.running ?? null, lastUsed: signals.lastUsed }, now));
@@ -47,6 +48,9 @@ export function identifyBrowser({ catalog, signals = {}, explicit = null, now = 
     return ask(candidates, `"${explicit}" is not a Chromium-family browser this library knows; pick one of the candidates`, defaultBrowser);
   }
   if (candidates.length === 0) return ask(candidates, "no Chromium-family browser is installed", defaultBrowser);
+
+  const attached = candidates.filter((c) => connected.includes(c.id));
+  if (attached.length === 1) return choose(candidates, attached[0], "connected", `${attached[0].label} has the BrowserSkill extension connected`, defaultBrowser);
 
   const inUse = candidates.filter((c) => c.running || c.recentlyUsed);
   const def = candidates.find((c) => c.isDefault);
