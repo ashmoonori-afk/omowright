@@ -242,6 +242,34 @@ function connectionOptions(options, profileDir) {
   return result;
 }
 
+// Asked over CDP first, as the pipe transport does: on Windows no signal can
+// ask a browser to quit, and Chrome cleans up only on a clean quit. Only a live
+// browser on a live socket is asked: CdpClient.send would otherwise reconnect
+// through the recorded port, which is not an identity (another process may
+// hold it by now). Then, like the pipe transport, the browser gets a bounded
+// wait to exit before terminateChild steps in.
+async function askBrowserToQuit(connection, child) {
+  if (child.exitCode !== null || child.signalCode !== null || !connection.cdp.isConnected) {
+    return false;
+  }
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  const quitRequested = await Promise.race([
+    connection.cdp
+      .send("Browser.close", undefined, undefined, { timeoutMs: BROWSER_CLOSE_TIMEOUT_MS })
+      .then(() => true, () => false),
+    exited.then(() => true),
+  ]);
+  if (child.exitCode === null && child.signalCode === null) {
+    let timer;
+    await Promise.race([
+      exited,
+      new Promise((resolve) => { timer = setTimeout(resolve, BROWSER_CLOSE_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+  }
+  return quitRequested;
+}
+
 async function launchNamed(
   name,
   { root, recordPath, lockPath },
@@ -307,11 +335,7 @@ async function launchNamed(
     const disconnect = connection.close.bind(connection);
     connection.close = async () => {
       let failure;
-      // Asked over CDP first, as the pipe transport does: on Windows no signal
-      // can ask a browser to quit, and Chrome cleans up only on a clean quit.
-      const quitRequested = await connection.cdp
-        .send("Browser.close", undefined, undefined, { timeoutMs: BROWSER_CLOSE_TIMEOUT_MS })
-        .then(() => true, () => false);
+      const quitRequested = await askBrowserToQuit(connection, child);
       try {
         await disconnect();
       } catch (error) {
