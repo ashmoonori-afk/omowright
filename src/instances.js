@@ -264,6 +264,12 @@ async function launchNamed(
       "--remote-debugging-port=0",
     ],
     {
+      // A named browser is shared through the registry, so it has to outlive
+      // the process that launched it. On Windows libuv puts every non-detached
+      // child in a kill-on-close job object, which kills the browser the
+      // moment its launcher exits (#90); detached keeps it out of that job,
+      // and windowsHide keeps a console-subsystem browser from opening a window.
+      ...(process.platform === "win32" ? { detached: true, windowsHide: true } : {}),
       ...(options.spawnOptions ?? {}),
       stdio: ["ignore", "ignore", "pipe"],
     },
