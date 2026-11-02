@@ -7,9 +7,20 @@ import path from "node:path";
 import { createNativeMessagingHost, encodeFrame, decodeFrames, installNativeMessagingHost, ExtensionHelloSchema, EventSchema, ResponseSchema, createChromeApi, BridgeProtocolError } from "../src/index.js";
 import { COMMAND_NAMES, EVENT_NAMES } from "../src/bridge-transport.js";
 import vm from "node:vm";
+import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 const extensionId = "a".repeat(32);
 const hello = { protocol: 1, type: "hello", role: "extension", connectionId: "c1", extensionId, extensionVersion: "0.1.0", events: ["tabs.activated"], commands: ["bookmarks.create"], maxMessageBytes: 1024 * 1024 };
+// Platform contract: registration runs for real on every OS. On Windows the host is a .cmd file, the browser reads the
+// manifest path from an HKCU registry value (a per-test key, deleted afterwards), and "writable by others" is an ACL grant.
+const win32 = process.platform === "win32";
+const registrationTimeout = { timeout: 60_000 };
+function hostExecutable(dir, name = "host") { const file = path.join(dir, win32 ? `${name}.cmd` : name); writeFileSync(file, win32 ? "@echo off\r\n" : "#!/bin/sh\n", { mode: 0o755 }); return file; }
+function testRegistry() { if (!win32) return { options: {}, cleanup() {} }; const root = `HKCU\\Software\\omowright-test-${randomUUID()}`; return { options: { registryKey: `${root}\\NativeMessagingHosts` }, cleanup() { spawnSync("reg.exe", ["delete", root, "/f"], { windowsHide: true }); } }; }
+function registryDefault(key) { const out = spawnSync("reg.exe", ["query", key, "/ve"], { encoding: "utf8", windowsHide: true }); return /REG_SZ\s+(.+?)\s*$/m.exec(out.stdout ?? "")?.[1] ?? null; }
+function grantsSid(file, sid) { return spawnSync("icacls", [file, "/findsid", `*${sid}`], { encoding: "utf8", windowsHide: true }).stdout.includes("SID Found"); }
+function setEveryoneModify(dir, on) { const out = spawnSync("icacls", on ? [dir, "/grant", "*S-1-1-0:(OI)(CI)M"] : [dir, "/remove:g", "*S-1-1-0"], { encoding: "utf8", windowsHide: true }); assert.equal(out.status, 0, out.stdout + out.stderr); }
 function streams() { return { input: new PassThrough(), output: new PassThrough(), error: new PassThrough() }; }
 function readOne(stream) { return new Promise((resolve, reject) => { const chunks = []; const onData = chunk => { chunks.push(chunk); const parsed = decodeFrames(Buffer.concat(chunks)); if (parsed.frames.length) { stream.off("data", onData); resolve(parsed.frames[0]); } }; stream.on("data", onData); stream.once("error", reject); }); }
 
@@ -49,11 +60,17 @@ test("host validates hello, negotiates capabilities, correlates response, and fo
   await new Promise(resolve => setImmediate(resolve)); assert.equal(events[0].payload.tabId, 4); host.close();
 });
 
-test("registration writes pinned manifest atomically and rejects unverified CloakBrowser path", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-")); const executable = path.join(root, "host"); writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 }); const dir = path.join(root, "hosts");
-  const result = await installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir });
-  assert.deepEqual(JSON.parse(readFileSync(result.path)), result.manifest); assert.equal(result.manifest.allowed_origins[0], `chrome-extension://${extensionId}/`); assert.equal(statSync(result.path).mode & 0o777, 0o600);
-  await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, browser: "cloakbrowser" }), /explicit and verified/); rmSync(root, { recursive: true, force: true });
+test("registration writes pinned manifest atomically and rejects unverified CloakBrowser path", registrationTimeout, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-")); const executable = hostExecutable(root); const dir = path.join(root, "hosts"); const registry = testRegistry();
+  try {
+    const result = await installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options });
+    assert.deepEqual(JSON.parse(readFileSync(result.path)), result.manifest); assert.equal(result.manifest.allowed_origins[0], `chrome-extension://${extensionId}/`);
+    if (win32) {
+      assert.equal(result.registryKey, `${registry.options.registryKey}\\com.omowright.cloakbridge`); assert.equal(registryDefault(result.registryKey), result.path);
+      for (const sid of ["S-1-1-0", "S-1-5-32-545", "S-1-5-11"]) assert.equal(grantsSid(result.path, sid), false, `manifest ACL grants ${sid}`);
+    } else assert.equal(statSync(result.path).mode & 0o777, 0o600);
+    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, browser: "cloakbrowser" }), /explicit and verified/);
+  } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("chrome API routes negotiated writes and preserves unsupported fallback", async () => {
@@ -74,10 +91,18 @@ test("mutations wait for the prior response and duplicate event sequences discon
   const event = { protocol: 1, type: "event", connectionId: "c1", seq: 1, occurredAt: 1, name: "tabs.activated", payload: { tabId: 1, windowId: 1 } }; s.input.write(encodeFrame(event)); await new Promise(resolve => setImmediate(resolve)); s.input.write(encodeFrame({ ...event, seq: 1 })); await new Promise(resolve => setImmediate(resolve)); assert.equal(host.isConnected, false); await second.catch(() => {}); host.close();
 });
 
-test("registration rejects endpointPath, unsafe host names, and overwrites only with force", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-hardening-")); const executable = path.join(root, "host"); writeFileSync(executable, "#!/bin/sh\\n", { mode: 0o755 }); const dir = path.join(root, "hosts");
-  await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir, endpointPath: "/tmp/x" }), /endpointPath/); await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, hostName: "../evil", nativeMessagingHostDir: dir }), /hostName/);
-  await installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir }); await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir }), /already exists/); await installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir, force: true }); rmSync(root, { recursive: true, force: true });
+test("registration rejects endpointPath, unsafe host names, and overwrites only with force", registrationTimeout, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-hardening-")); const executable = hostExecutable(root); const dir = path.join(root, "hosts"); const registry = testRegistry(); const options = { hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options };
+  try {
+    await assert.rejects(() => installNativeMessagingHost({ ...options, endpointPath: "/tmp/x" }), /endpointPath/); await assert.rejects(() => installNativeMessagingHost({ ...options, hostName: "../evil" }), /hostName/);
+    await installNativeMessagingHost(options); await assert.rejects(() => installNativeMessagingHost(options), /already exists/); await installNativeMessagingHost({ ...options, force: true });
+    if (win32) {
+      // the per-user registry value is only repointed at another manifest with force
+      const other = { ...options, nativeMessagingHostDir: path.join(root, "other-hosts") };
+      await assert.rejects(() => installNativeMessagingHost(other), /already points at/);
+      const moved = await installNativeMessagingHost({ ...other, force: true }); assert.equal(registryDefault(moved.registryKey), moved.path);
+    }
+  } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("timed out mutation fails the connection without sending its successor", async () => {
@@ -113,10 +138,21 @@ test("bookmark result schema is recursive and explicitly strict", () => {
   assert.equal(ResponseSchema.safeParse(response).success, true); assert.equal(ResponseSchema.safeParse({ ...response, result: { ...response.result, futureChromeField: true } }).success, false); assert.equal(ResponseSchema.safeParse({ ...response, result: { ...response.result, children: [{ ...response.result.children[0], futureChromeField: true }] } }).success, false);
 });
 
-test("registration rejects writable or symlinked directory components", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-components-")); const executable = path.join(root, "host"); writeFileSync(executable, "#!/bin/sh\\n", { mode: 0o755 }); const parent = path.join(root, "parent"); const dir = path.join(parent, "hosts"); mkdirSync(parent); chmodSync(parent, 0o777);
-  await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir }), /security rejected/); chmodSync(parent, 0o700); const linked = path.join(root, "linked"); symlinkSync(parent, linked);
-  await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linked, "hosts") }), /security rejected/); rmSync(root, { recursive: true, force: true });
+test("registration rejects writable or symlinked directory components", registrationTimeout, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-components-")); const executable = hostExecutable(root); const parent = path.join(root, "parent"); const dir = path.join(parent, "hosts"); mkdirSync(parent); const registry = testRegistry();
+  try {
+    if (win32) setEveryoneModify(parent, true); else chmodSync(parent, 0o777);
+    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options }), /security rejected/);
+    if (win32) setEveryoneModify(parent, false); else chmodSync(parent, 0o700);
+    const linked = path.join(root, "linked"); symlinkSync(parent, linked, win32 ? "junction" : undefined);
+    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linked, "hosts"), ...registry.options }), /security rejected/);
+    if (win32) {
+      // Chrome starts the host in its own directory, so a directory others can add files to (DLLs, scripts) is refused
+      const shared = path.join(root, "shared-bin"); mkdirSync(shared); const planted = hostExecutable(shared); setEveryoneModify(shared, true);
+      await assert.rejects(() => installNativeMessagingHost({ hostPath: planted, extensionId, nativeMessagingHostDir: path.join(root, "hosts"), ...registry.options }), /hostPath directory security rejected/);
+      setEveryoneModify(shared, false);
+    }
+  } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("settled mutations remove abort listeners and timers", async () => {
@@ -160,9 +196,14 @@ test("protocolError responses are schema-valid and cannot collide with commands"
   assert.equal(ResponseSchema.safeParse(response).success, true); assert.equal(ResponseSchema.safeParse({ ...response, ok: true, error: undefined, result: {} }).success, false); assert.equal(COMMAND_NAMES.includes("protocolError"), false);
 });
 
-test("registration rejects symlinked executables and parent components", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-links-")); const real = path.join(root, "real"); mkdirSync(real); const executable = path.join(real, "host"); writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 }); const linkedHost = path.join(root, "linked-host"); symlinkSync(executable, linkedHost); await assert.rejects(() => installNativeMessagingHost({ hostPath: linkedHost, extensionId, nativeMessagingHostDir: path.join(root, "hosts") }), /owned executable/);
-  const linkedParent = path.join(root, "linked-parent"); symlinkSync(real, linkedParent); await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linkedParent, "hosts") }), /security rejected/); rmSync(root, { recursive: true, force: true });
+test("registration rejects symlinked executables and parent components", registrationTimeout, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-links-")); const real = path.join(root, "real"); mkdirSync(real); const executable = hostExecutable(real); const registry = testRegistry();
+  try {
+    const linkedHost = path.join(root, win32 ? "linked-host.cmd" : "linked-host"); symlinkSync(executable, linkedHost, win32 ? "file" : undefined);
+    await assert.rejects(() => installNativeMessagingHost({ hostPath: linkedHost, extensionId, nativeMessagingHostDir: path.join(root, "hosts"), ...registry.options }), /owned executable/);
+    const linkedParent = path.join(root, "linked-parent"); symlinkSync(real, linkedParent, win32 ? "junction" : undefined);
+    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linkedParent, "hosts"), ...registry.options }), /security rejected/);
+  } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("write rejection removes the abort listener", async () => {

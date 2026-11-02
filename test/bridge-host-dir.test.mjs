@@ -24,7 +24,17 @@ for (const [platform, browsers] of Object.entries(EXPECTED)) {
   }
 }
 
+// Windows has no directory Chrome scans (the registry value points at the manifest), so the default is a per-user
+// directory under %LOCALAPPDATA%, one per browser.
+test("default native messaging host dir: per-user LocalAppData directory on win32", () => {
+  const localAppData = process.env.LOCALAPPDATA ?? path.win32.join(homedir(), "AppData", "Local");
+  for (const browser of ["chrome", "chromium"]) {
+    assert.equal(defaultNativeMessagingHostDir(browser, "win32"), path.win32.join(localAppData, "omowright", "NativeMessagingHosts", browser));
+  }
+});
+
 test("default native messaging host dir refuses unknown browsers and platforms", () => {
   assert.throws(() => defaultNativeMessagingHostDir("cloakbrowser", "linux"), /custom browser requires nativeMessagingHostDir/);
-  assert.throws(() => defaultNativeMessagingHostDir("chrome", "win32"), /nativeMessagingHostDir/);
+  assert.throws(() => defaultNativeMessagingHostDir("cloakbrowser", "win32"), /custom browser requires nativeMessagingHostDir/);
+  assert.throws(() => defaultNativeMessagingHostDir("chrome", "freebsd"), /no default nativeMessagingHostDir on freebsd/);
 });
