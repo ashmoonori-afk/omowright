@@ -9,6 +9,9 @@ import { lastCall, stubClient } from "./fixtures/bsk-stub-client.mjs";
 // action with permission_denied / cooperation_sync_required unless the request carries the
 // context_id of the latest tool.cooperate sync, and the daemon forwards only what the caller sends.
 // This stub models that refusal, so the test fails on a session that cannot send the context.
+// BrowserSkill ext-v0.4.0 controller: reads bypass cooperation unless probe_hover is set.
+// https://github.com/Tencent/BrowserSkill/blob/7e300ff6a35b326ac9abd03f315f30769ad01861/apps/extension/src/cooperation/controller.ts#L87-L98
+const READS = new Set(["snapshot", "observe", "get_html", "screenshot", "console", "network", "extract", "wait_for_element", "wait_for_navigation", "record_start"]);
 const GATED = new Set(["navigate", "navigate_back", "navigate_forward", "reload", "observe", "click", "hover", "focus", "blur", "fill", "press", "select", "scroll_to", "wheel", "evaluate", "screenshot_full_page", "tab_close", "window_resize", "emulate"]);
 
 function sharedTabClient(replies = {}) {
@@ -23,9 +26,10 @@ function sharedTabClient(replies = {}) {
         latest = `ctx-${syncs}`;
         return { context_id: latest, tab_id: 7, kind: "baseline" };
       };
-      if (!GATED.has(name)) return target[method];
+      if (READS.has(name) && name !== "observe") return target[method];
+      if (!GATED.has(name) && name !== "observe") return target[method];
       return (params, n) => {
-        if (params.context_id === undefined || params.context_id !== latest) {
+        if ((name !== "observe" || params.probe_hover) && (params.context_id === undefined || params.context_id !== latest)) {
           throw new BskRpcError("permission_denied", "This action requires the context returned by the latest cooperate sync", { reason: "cooperation_sync_required" });
         }
         const reply = target[method];
@@ -104,4 +108,23 @@ test("a gated action throws on an option it does not know instead of dropping it
   assert.throws(() => session.click("@e3", { contextId: "ctx-1" }), { name: "TypeError", message: /unknown option "contextId"/ });
   assert.throws(() => session.tabClose(7, { context: "ctx-1", depends: ["@e2"] }), { name: "TypeError", message: /unknown option "depends"/ });
   assert.equal(client.calls.length, 0);
+});
+
+// Protocol contract: skills/omowright/references/browserskill.md promises these reads need no
+// cooperate sync, so each must reach only BrowserSkill read tools and send no context_id.
+test("documented reads need no cooperation context", async () => {
+  const names = ["snapshot", "getHtml", "screenshot"];
+  const client = sharedTabClient({ "tool.screenshot": { image_base64: "", width: 1, height: 1 } });
+  const session = new BskSession(client, { sessionId: "abcd" });
+  for (const name of names) {
+    assert.equal(typeof session[name], "function", `unknown documented read: ${name}`);
+    const before = client.calls.length;
+    await session[name]();
+    const calls = client.calls.slice(before);
+    assert.ok(calls.length > 0, `${name} made no tool call`);
+    for (const call of calls) {
+      assert.ok(READS.has(call.method.replace(/^tool\./, "")), `${name} calls gated ${call.method}`);
+      assert.equal(Object.hasOwn(call.params, "context_id"), false, name);
+    }
+  }
 });
