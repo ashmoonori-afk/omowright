@@ -118,7 +118,7 @@ test("probeBrowserSignals reads the per-user LaunchServices plist under the give
   const signals = await probeBrowserSignals({
     platform: "darwin", home: "/h", browsers: [{ id: "aside", userDataDir: "/h/ud" }],
     run: async (command, args) => { calls.push([command, ...args]); return command === "plutil" ? null : `${app("Aside")}\n`; },
-    stat: (p) => { if (p === path.join("/h/ud", "Local State")) return { mtimeMs: 42 }; throw new Error("ENOENT"); },
+    stat: (p) => { if (p === "/h/ud/Local State") return { mtimeMs: 42 }; throw new Error("ENOENT"); },
   });
   assert.equal(signals.defaultBrowser, null, "an unreadable default stays unknown");
   assert.deepEqual(signals.running, [app("Aside")]);
