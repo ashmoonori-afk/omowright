@@ -10,22 +10,7 @@ import {
 import { BrowserConnection } from "./connection.js";
 import { normalizeDialogPolicy, resolveDialogAction } from "./dialog-policy.js";
 import { targetCreationCapability } from "./internal-capability.js";
-
-class Emittery {
-  #listeners = new Map();
-  on(event, fn) {
-    const list = this.#listeners.get(event) ?? [];
-    list.push(fn);
-    this.#listeners.set(event, list);
-    return () => {
-      const cur = this.#listeners.get(event) ?? [];
-      this.#listeners.set(event, cur.filter(f => f !== fn));
-    };
-  }
-  async emit(event, data) {
-    for (const fn of this.#listeners.get(event) ?? []) await fn(data);
-  }
-}
+import { SerialEmitter as Emittery } from "./serial-emitter.js";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const DEFAULT_READINESS_TIMEOUT_MS = 10_000;
@@ -113,17 +98,28 @@ export class PipeCdpClient {
     try {
       await writeBrowserPidFile(profileDir, browserPid);
     } catch (error) {
-      // Never leave a browser the caller holds no handle to: quit it (SIGTERM,
-      // then the bounded grace) before reporting the launch failure.
-      const child = this.#child;
-      this.#child = undefined;
-      await terminateChild(child);
+      await this.#quitFailedLaunch();
       throw error;
     }
     this.#connected = true;
-    await this.#awaitReady();
-    await this.send("Target.setDiscoverTargets", { discover: true }).catch(() => {});
-    await this.transportEvents.emit("connected");
+    try {
+      await this.#awaitReady();
+      await this.send("Target.setDiscoverTargets", { discover: true }).catch(() => {});
+      await this.transportEvents.emit("connected");
+    } catch (error) {
+      await this.#quitFailedLaunch();
+      throw error;
+    }
+  }
+
+  // Never leave a browser the caller holds no handle to: a rejected launch hands
+  // back no client, so quit it (SIGTERM, then the bounded grace) before reporting.
+  async #quitFailedLaunch() {
+    const child = this.#child;
+    this.#child = undefined;
+    this.#connected = false;
+    this.#failAll(Error("CDP pipe launch failed"));
+    await terminateChild(child);
   }
 
   async #awaitReady() {
