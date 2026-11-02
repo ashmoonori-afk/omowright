@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { BROWSERSKILL_EXTENSION_IDS, STORE_PAGE_URLS, STORE_UPDATE_URLS } from "./browsers.js";
+import { BROWSERSKILL_EXTENSION_IDS, STORE_PAGE_URLS, STORE_UPDATE_URLS, pathFor } from "./browsers.js";
 
 export { BROWSERSKILL_EXTENSION_IDS, STORE_PAGE_URLS, STORE_UPDATE_URLS, catalogBrowsers, detectBrowsers } from "./browsers.js";
 
@@ -34,13 +34,13 @@ export function externalExtensionEntry({ platform = process.platform, browser })
   const content = JSON.stringify({ external_update_url: updateUrl }, null, 2) + "\n";
   if (platform === "linux" && !browser.userExternalDir) {
     return {
-      kind: "file", path: path.join(browser.externalDir, `${id}.json`), content, needsRestart: true,
+      kind: "file", path: pathFor(platform).join(browser.externalDir, `${id}.json`), content, needsRestart: true,
       storeUrl: STORE_PAGE_URLS[browser.store],
       humanStep: `Quit ${label} completely and open it again; the extension installs without a prompt.`,
     };
   }
   return {
-    kind: "file", path: path.join(browser.userDataDir, "External Extensions", `${id}.json`), content, needsRestart: true,
+    kind: "file", path: pathFor(platform).join(browser.userDataDir, "External Extensions", `${id}.json`), content, needsRestart: true,
     storeUrl: STORE_PAGE_URLS[browser.store],
     humanStep: platform === "linux" ? `Quit ${label} completely and open it again; the extension installs without a prompt.` : ENABLE_STEP(label),
   };

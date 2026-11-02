@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, globSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, globSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { connectPipe, createAgentTabs } from "../src/index.js";
 import { createNetworkSnoop } from "../src/network-snoop.js";
 import { collectWhileScrolling } from "../src/scroll-collect.js";
 import { startSnoopServer } from "./fixtures/snoop-server.mjs";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -65,7 +66,7 @@ test(
     } finally {
       snoop?.dispose();
       await connection?.close();
-      rmSync(userDataDir, { recursive: true, force: true });
+      removeTreeSync(userDataDir);
       await server.close();
     }
   },

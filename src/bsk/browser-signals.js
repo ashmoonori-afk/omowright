@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { pathFor } from "./browsers.js";
 
 const PROBE_TIMEOUT_MS = 3_000;
 
@@ -38,7 +39,7 @@ export function parseProcessNames(platform, output) {
     } else if (platform === "darwin") {
       if (/\.app\/Contents\/MacOS\/[^/]+$/.test(line)) names.add(line);
     } else {
-      names.add(path.basename(line));
+      names.add(path.posix.basename(line));
     }
   }
   return [...names];
@@ -46,7 +47,7 @@ export function parseProcessNames(platform, output) {
 
 async function probeDefault({ platform, home, run }) {
   if (platform === "darwin") {
-    const plist = path.join(home, "Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist");
+    const plist = path.posix.join(home, "Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist");
     const json = await run("plutil", ["-convert", "json", "-o", "-", plist]);
     return json === null ? null : parseMacDefaultBrowser(json);
   }
@@ -68,11 +69,11 @@ async function probeRunning({ platform, run }) {
   return out === null ? null : parseProcessNames(platform, out);
 }
 
-function lastUsedAt(browser, stat) {
+function lastUsedAt(browser, stat, { join }) {
   let latest = null;
-  for (const rel of ["Local State", path.join("Default", "History"), path.join("Default", "Preferences")]) {
+  for (const rel of [["Local State"], ["Default", "History"], ["Default", "Preferences"]]) {
     try {
-      const mtime = stat(path.join(browser.userDataDir, rel)).mtimeMs;
+      const mtime = stat(join(browser.userDataDir, ...rel)).mtimeMs;
       if (latest === null || mtime > latest) latest = mtime;
     } catch {}
   }
@@ -83,6 +84,6 @@ function lastUsedAt(browser, stat) {
 // null (unknown) instead of throwing, so a locked-down machine yields "ask the user", never a guess.
 export async function probeBrowserSignals({ platform = process.platform, home = homedir(), browsers = [], run = runDefault, stat = statSync } = {}) {
   const [defaultBrowser, running] = await Promise.all([probeDefault({ platform, home, run }), probeRunning({ platform, run })]);
-  const lastUsed = Object.fromEntries(browsers.map((b) => [b.id, lastUsedAt(b, stat)]));
+  const lastUsed = Object.fromEntries(browsers.map((b) => [b.id, lastUsedAt(b, stat, pathFor(platform))]));
   return { defaultBrowser, running, lastUsed };
 }

@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, globSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { connectPipe, createAgentTabs, injectCookies, sanitizeCookies } from "../src/index.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -62,6 +63,6 @@ test("injectCookies sets cookies reachable on navigation", { skip: !SHELL && "no
     assert.ok(cookieHeader.includes("__Host-pinned=yes"), `host-pinned cookie visible: ${cookieHeader}`);
   } finally {
     await connection.close();
-    rmSync(ud, { recursive: true, force: true });
+    removeTreeSync(ud);
   }
 });

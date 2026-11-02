@@ -3,22 +3,8 @@ import assert from "node:assert/strict";
 import { BskSession } from "../src/bsk/session.js";
 import { connectBrowserSkill } from "../src/bsk/connect.js";
 import { resolveTarget } from "../src/bsk/targets.js";
+import { lastCall, stubClient } from "./fixtures/bsk-stub-client.mjs";
 
-function stubClient(replies = {}) {
-  const calls = [];
-  return {
-    calls,
-    async call(method, params, options) {
-      calls.push({ method, params, options });
-      const reply = replies[method];
-      if (typeof reply === "function") return reply(params, calls.length);
-      if (reply instanceof Error) throw reply;
-      return reply ?? {};
-    },
-  };
-}
-
-function lastCall(client) { return client.calls.at(-1); }
 
 test("resolveTarget maps refs, selectors and capture coordinates to daemon fields", () => {
   assert.deepEqual(resolveTarget("@e3"), { ref: "@e3" });

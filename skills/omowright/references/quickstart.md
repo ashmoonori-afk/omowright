@@ -16,16 +16,26 @@ const { connect, connectPipe } = await import("omowright");
   nothing for other processes to hijack. Default choice. Returns an object with
   `newTab(url)`.
 - `connect("http://127.0.0.1:9222")` — attaches to a running Chromium started
-  with `--remote-debugging-port`. Use for a real user browser (its profile,
-  cookies, logins); pair with `createChromeApi` for bookmarks/history. Returns
-  `BrowserConnection`, which has **NO `newTab()`** — create tabs over CDP:
+  with `--remote-debugging-port`, or a user's own Chrome with remote debugging
+  enabled from `chrome://inspect/#remote-debugging` (its `DevToolsActivePort`
+  names the port and the `ws://127.0.0.1:<port>/devtools/browser/<id>` URL;
+  `connect()` takes either). Use for a real user browser (its
+  profile, cookies, logins); pair with `createChromeApi` for bookmarks/history.
+  Returns a `BrowserConnection` with `newTab(url)`.
+
+**Every NEW connection to a user's own Chrome shows them an "Allow remote
+debugging?" prompt.** `connect()` calls in one process share one connection
+per browser, and `close()` releases your handle (the last release disconnects).
+So keep ONE handle for the whole job: across eval cells, store it on
+`globalThis` and reuse it instead of connecting (and closing) in every cell.
 
 ```js
-const browser = await connect("http://127.0.0.1:9222");
-const { targetId } = await browser.cdp.send("Target.createTarget", { url: "https://example.com" });
-const page = await browser.attachPage(targetId);
-// ... work ...
-await browser.cdp.send("Target.closeTarget", { targetId });
+globalThis.userBrowser ??= await connect("http://127.0.0.1:9222"); // one prompt
+const page = await userBrowser.newTab("https://example.com");
+// ... work, in this cell and later ones ...
+await page.close();
+// at the very end of the job:
+await userBrowser.close();
 ```
 
 Always launch with a dedicated `--user-data-dir` (a `mkdtemp` dir) and delete it

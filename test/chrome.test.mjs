@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, globSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, globSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { connectPipe, createAgentTabs, createChromeApi, UnsupportedOperationError } from "../src/index.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -103,7 +104,7 @@ test("chrome.tabs and chrome.windows expose CDP target and window state", { skip
     assert.equal(single.id, wins[0].id);
   } finally {
     await connection.close();
-    rmSync(ud, { recursive: true, force: true });
+    removeTreeSync(ud);
   }
 });
 
@@ -151,8 +152,8 @@ test("chrome.bookmarks, history, and topSites read real Chrome profile formats",
     assert.equal(dls[0].url, "https://files.example.com/old-file.zip");
   } finally {
     await connection.close();
-    rmSync(ud, { recursive: true, force: true });
-    rmSync(profileRoot, { recursive: true, force: true });
+    removeTreeSync(ud);
+    removeTreeSync(profileRoot);
   }
 });
 
@@ -184,8 +185,8 @@ test("chrome.downloads.download saves a file through a real server", { skip: !SH
   } finally {
     await connection.close();
     server.close();
-    rmSync(ud, { recursive: true, force: true });
-    rmSync(downloadDir, { recursive: true, force: true });
+    removeTreeSync(ud);
+    removeTreeSync(downloadDir);
   }
 });
 
@@ -204,6 +205,6 @@ test("extension-bridge-only chrome methods throw UnsupportedOperationError", { s
     await assert.rejects(() => chrome.bookmarks.getTree(), UnsupportedOperationError);
   } finally {
     await connection.close();
-    rmSync(ud, { recursive: true, force: true });
+    removeTreeSync(ud);
   }
 });

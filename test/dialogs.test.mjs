@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, globSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -10,6 +10,7 @@ import { connect } from "../src/index.js";
 import { BrowserConnection } from "../src/connection.js";
 import { resolveDialogAction } from "../src/dialog-policy.js";
 import { createAgentTabs } from "../src/agent-tabs.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -157,7 +158,7 @@ test("live dialogPolicy dismisses confirm, fills prompt, and still emits dialog"
     assert.equal(await prompted, "hello");
   } finally {
     await connection.close();
-    rmSync(ud, { recursive: true, force: true });
+    removeTreeSync(ud);
   }
 });
 
@@ -204,6 +205,6 @@ test("live connect() honours dialogPolicy over WebSocket", {
     const exited = browser.exitCode === null ? once(browser, "exit") : Promise.resolve();
     browser.kill();
     await exited;
-    rmSync(ud, { recursive: true, force: true });
+    removeTreeSync(ud);
   }
 });

@@ -3,7 +3,7 @@
 // back (`crates/bsk-cli/src/ipc_client.rs`, `crates/bsk-protocol/src/frame.rs`).
 // `cancel` opens a second connection exactly as the CLI's SIGINT path does.
 import { connect } from "node:net";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { readDaemonInfo, resolveBskHome, startDaemonWithCli } from "./daemon-info.js";
@@ -28,14 +28,47 @@ function ownBudgetMs(params) {
 const PROBE_TIMEOUT_MS = 2_000;
 
 // Where the daemon listens when it was started with the default layout
-// (`crates/bsk-cli/src/daemon/info.rs`: `$BSK_HOME/run/daemon.sock`).
-export function defaultSocketPath(home) {
-  return path.join(home, "run", "daemon.sock");
+// (`crates/bsk-cli/src/daemon/paths.rs`): `$BSK_HOME/run/daemon.sock`, or on Windows the named pipe
+// `render_pipe_name` derives from USERNAME and the home.
+export function defaultSocketPath(home, env = process.env) {
+  if (process.platform !== "win32") return path.join(home, "run", "daemon.sock");
+  return `\\\\.\\pipe\\bsk-daemon-${rustStrHash(env.USERNAME ?? "default", home)}`;
+}
+
+// Rust's DefaultHasher (SipHash-1-3, zero keys) over each value's UTF-8 bytes plus the 0xff
+// terminator `str::hash` writes, which is how bsk hashes the pipe name.
+function rustStrHash(...values) {
+  const bytes = Buffer.concat(values.flatMap((value) => [Buffer.from(value, "utf8"), Buffer.from([0xff])]));
+  const mask = (1n << 64n) - 1n;
+  const rotl = (x, b) => ((x << b) | (x >> (64n - b))) & mask;
+  let [v0, v1, v2, v3] = [0x736f6d6570736575n, 0x646f72616e646f6dn, 0x6c7967656e657261n, 0x7465646279746573n];
+  const round = () => {
+    v0 = (v0 + v1) & mask; v1 = rotl(v1, 13n) ^ v0; v0 = rotl(v0, 32n);
+    v2 = (v2 + v3) & mask; v3 = rotl(v3, 16n) ^ v2;
+    v0 = (v0 + v3) & mask; v3 = rotl(v3, 21n) ^ v0;
+    v2 = (v2 + v1) & mask; v1 = rotl(v1, 17n) ^ v2; v2 = rotl(v2, 32n);
+  };
+  const compress = (word) => { v3 ^= word; round(); v0 ^= word; };
+  const whole = bytes.length - (bytes.length % 8);
+  for (let i = 0; i < whole; i += 8) compress(bytes.readBigUInt64LE(i));
+  let last = BigInt(bytes.length & 0xff) << 56n;
+  for (let i = whole; i < bytes.length; i += 1) last |= BigInt(bytes[i]) << BigInt(8 * (i - whole));
+  compress(last);
+  v2 ^= 0xffn;
+  round(); round(); round();
+  return ((v0 ^ v1 ^ v2 ^ v3) & mask).toString(16).padStart(16, "0");
+}
+
+// Node's existsSync cannot see a named pipe, so on Windows the pipe namespace is listed instead;
+// a listing that fails counts as no pipe, so discovery falls back to starting the daemon.
+function socketExists(sockPath) {
+  if (process.platform !== "win32") return existsSync(sockPath);
+  try { return readdirSync("\\\\.\\pipe\\").includes(path.win32.basename(sockPath)); } catch { return false; }
 }
 
 // True when something answers system.ping on `sockPath`: a live daemon whose daemon.json was lost.
 function probeSocket(sockPath) {
-  if (process.platform === "win32" || !existsSync(sockPath)) return Promise.resolve(false);
+  if (!socketExists(sockPath)) return Promise.resolve(false);
   return new Promise((resolve) => {
     const socket = connect(sockPath);
     const done = (alive) => { clearTimeout(timer); socket.destroy(); resolve(alive); };
@@ -58,8 +91,17 @@ export class BskRpcError extends Error {
 function shortId() { return randomBytes(6).toString("hex"); }
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
+// daemon.json outlives a daemon that was killed, as when a host closes the job it ran in. Only its socket
+// says so: a connect that fails with one of these reached no listener. Its pid cannot, since a client in
+// another PID namespace sees a live daemon's pid as gone and a reused pid makes a dead one look alive.
+const NO_LISTENER = new Set(["ENOENT", "ECONNREFUSED"]);
+
+function sameRecord(info, stale) {
+  return Boolean(stale) && JSON.stringify(info) === JSON.stringify(stale.info);
+}
+
 export class BskIpcClient {
-  #home; #sockPath; #autoStart; #startDaemon; #timeoutMs; #starting = null;
+  #home; #env; #sockPath; #autoStart; #startDaemon; #timeoutMs; #starting = null;
 
   constructor({ home, env = process.env, sockPath, autoStart, startDaemon, timeoutMs = DEFAULT_TIMEOUT_MS, bskBin } = {}) {
     this.#home = home ?? resolveBskHome(env);
@@ -67,22 +109,27 @@ export class BskIpcClient {
     this.#autoStart = autoStart ?? env.BSK_AUTO_START !== "0";
     this.#startDaemon = startDaemon ?? (() => startDaemonWithCli({ home: this.#home, env, bskBin }));
     this.#timeoutMs = timeoutMs;
+    this.#env = env;
   }
 
   get home() { return this.#home; }
 
-  async resolveSocket({ isAborted = () => false } = {}) {
+  // `stale` is a daemon.json record ({info, code}) whose socket refused a connect; it is skipped until rewritten.
+  async resolveSocket({ isAborted = () => false, stale } = {}) {
     if (this.#sockPath) return this.#sockPath;
     const found = readDaemonInfo(this.#home);
-    if (found) return found.sock_path;
+    if (found && !sameRecord(found, stale)) return found.sock_path;
     // daemon.json can vanish while the daemon keeps running; starting another one then fails on the held port.
-    const orphan = defaultSocketPath(this.#home);
+    const orphan = defaultSocketPath(this.#home, this.#env);
     // Probe only when the socket file exists, so a fresh home starts its daemon in the same tick as before.
-    if (existsSync(orphan)) {
+    if (socketExists(orphan)) {
       if (await probeSocket(orphan)) return orphan;
       if (isAborted()) throw new BskRpcError("cancelled", "cancelled before the daemon was located");
     }
     if (!this.#autoStart) {
+      if (stale) {
+        throw new BskRpcError("no_daemon", `${this.#home}/daemon.json names a BrowserSkill daemon at ${stale.info.sock_path} that is no longer listening (${stale.code}) and automatic start is disabled (BSK_AUTO_START=0); run \`bsk daemon start\` in the environment that owns it`);
+      }
       throw new BskRpcError("no_daemon", `no BrowserSkill daemon published at ${this.#home}/daemon.json and automatic start is disabled (BSK_AUTO_START=0); run \`bsk daemon start\` in the environment that owns it`);
     }
     if (!this.#starting) this.#starting = this.#startDaemon().finally(() => { this.#starting = null; });
@@ -90,7 +137,7 @@ export class BskIpcClient {
     const deadline = Date.now() + DISCOVERY_BUDGET_MS;
     while (Date.now() < deadline && !isAborted()) {
       const info = readDaemonInfo(this.#home);
-      if (info) return info.sock_path;
+      if (info && !sameRecord(info, stale)) return info.sock_path;
       await sleep(DISCOVERY_RETRY_MS);
     }
     if (isAborted()) throw new BskRpcError("cancelled", "cancelled while waiting for the daemon to publish daemon.json");
@@ -115,10 +162,7 @@ export class BskIpcClient {
     if (params !== undefined) frame.params = params;
     let aborted = false;
     let abortSocket = () => {};
-    const promise = (async () => {
-      const sockPath = await this.resolveSocket({ isAborted: () => aborted });
-      if (aborted) throw new BskRpcError("cancelled", `${method} cancelled by caller`);
-      return new Promise((resolve, reject) => {
+    const exchange = (sockPath, onNoListener) => new Promise((resolve, reject) => {
         const socket = connect(sockPath);
         let buffer = "";
         let settled = false;
@@ -136,7 +180,10 @@ export class BskIpcClient {
           if (cancels) this.cancel(rpcId).catch(() => {});
         }, waitMs);
         abortSocket = () => finish(reject, new BskRpcError("cancelled", `${method} cancelled by caller`));
-        socket.on("error", (error) => finish(reject, new BskRpcError("no_daemon", `IPC socket ${sockPath}: ${error.code ?? error.message}`)));
+        socket.on("error", (error) => {
+          if (NO_LISTENER.has(error.code)) onNoListener(error.code);
+          finish(reject, new BskRpcError("no_daemon", `IPC socket ${sockPath}: ${error.code ?? error.message}`));
+        });
         socket.on("connect", () => socket.write(JSON.stringify(frame) + "\n"));
         socket.on("data", (chunk) => {
           buffer += chunk.toString("utf8");
@@ -146,6 +193,21 @@ export class BskIpcClient {
         });
         socket.on("close", () => finish(reject, new BskRpcError("protocol_error", `${method}: daemon closed the connection without a reply`)));
       });
+    const promise = (async () => {
+      let stale;
+      for (;;) {
+        const sockPath = await this.resolveSocket({ isAborted: () => aborted, stale });
+        if (aborted) throw new BskRpcError("cancelled", `${method} cancelled by caller`);
+        let refused;
+        try {
+          return await exchange(sockPath, (code) => { refused = code; });
+        } catch (error) {
+          // The frame never left, so one retry past the stale record sends nothing twice.
+          const info = refused && !stale && !this.#sockPath ? readDaemonInfo(this.#home) : null;
+          if (info?.sock_path !== sockPath) throw error;
+          stale = { info, code: refused };
+        }
+      }
     })();
     return { rpcId, promise, abort: () => { aborted = true; abortSocket(); } };
   }

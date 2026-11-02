@@ -49,6 +49,8 @@ for (const doc of docs) {
 
   if (path.basename(doc) === "SKILL.md") {
     test(`${rel}: frontmatter name matches its directory`, () => {
+      // Package contract: shipped skill docs are LF on every OS (.gitattributes), so a loader sees the same bytes.
+      assert.ok(!text.includes("\r"), "skill docs must be checked out with LF line endings (see .gitattributes)");
       const { name, description } = frontmatter(text);
       assert.equal(name, path.basename(path.dirname(doc)));
       assert.ok(description && description.length > 20, "description must route the skill");

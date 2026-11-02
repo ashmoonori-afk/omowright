@@ -1,4 +1,12 @@
 import { spawn } from "node:child_process";
+import {
+  browserSpawnDetached,
+  profileDirFromArgs,
+  reapOrphanedBrowser,
+  removeBrowserPidFile,
+  terminateChild,
+  writeBrowserPidFile,
+} from "./browser-process.js";
 import { BrowserConnection } from "./connection.js";
 import { normalizeDialogPolicy, resolveDialogAction } from "./dialog-policy.js";
 import { targetCreationCapability } from "./internal-capability.js";
@@ -71,10 +79,15 @@ export class PipeCdpClient {
     // onto the caller's tty (it corrupted the senpi TUI). Pipe + drain into a
     // bounded tail kept for launch diagnostics.
     const stdio = ["ignore", "pipe", "pipe", "pipe", "pipe"];
+    const profileDir = profileDirFromArgs(this.#browserArgs);
+    await reapOrphanedBrowser(profileDir);
     this.#child = spawn(this.#browserPath, [...this.#browserArgs, "--remote-debugging-pipe"], {
+      detached: browserSpawnDetached,
       ...this.#spawnOptions,
       stdio,
     });
+    const browserPid = this.#child.pid;
+    this.#child.once("exit", () => removeBrowserPidFile(profileDir, browserPid));
     this.#stdioTail = "";
     for (const stream of [this.#child.stdout, this.#child.stderr]) {
       if (!stream) continue;
@@ -97,6 +110,16 @@ export class PipeCdpClient {
       this.#failAll(Error("CDP pipe browser exited"));
       this.transportEvents.emit("disconnected").catch(() => {});
     });
+    try {
+      await writeBrowserPidFile(profileDir, browserPid);
+    } catch (error) {
+      // Never leave a browser the caller holds no handle to: quit it (SIGTERM,
+      // then the bounded grace) before reporting the launch failure.
+      const child = this.#child;
+      this.#child = undefined;
+      await terminateChild(child);
+      throw error;
+    }
     this.#connected = true;
     await this.#awaitReady();
     await this.send("Target.setDiscoverTargets", { discover: true }).catch(() => {});
@@ -166,11 +189,12 @@ export class PipeCdpClient {
     this.#child = undefined;
     if (child && child.exitCode === null) {
       const exited = new Promise(resolve => child.once("exit", resolve));
+      let quitRequested = false;
       if (this.#connected) {
         await Promise.race([
           this.send("Browser.close", undefined, undefined, {
             timeoutMs: GRACEFUL_CLOSE_TIMEOUT_MS,
-          }).catch(() => {}),
+          }).then(() => { quitRequested = true; }, () => {}),
           exited,
         ]);
       }
@@ -182,10 +206,7 @@ export class PipeCdpClient {
           new Promise(resolve => setTimeout(resolve, GRACEFUL_CLOSE_TIMEOUT_MS)),
         ]);
       }
-      if (child.exitCode === null) {
-        try { child.kill("SIGKILL"); } catch {}
-        await exited;
-      }
+      await terminateChild(child, { quitRequested });
       return;
     }
     this.#connected = false;

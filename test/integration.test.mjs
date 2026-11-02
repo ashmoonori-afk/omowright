@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, globSync, readdirSync, readlinkSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync, readdirSync, readlinkSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { connectPipe, compactSnapshot, createAgentTabs } from "../src/index.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const home = process.env.HOME;
@@ -33,8 +34,22 @@ async function serveFixturePage() {
   return { server, url: `http://127.0.0.1:${server.address().port}/` };
 }
 
-// Linux reads /proc directly (lsof is often absent there); elsewhere lsof exits 1 when nothing matches.
+// Linux reads /proc directly (lsof is often absent there); Windows has no lsof, so it asks the TCP stack
+// through Get-NetTCPConnection (IPv4 and IPv6, locale-independent); macOS lsof exits 1 when nothing matches.
 function listeningTcpSockets(pid) {
+  if (process.platform === "win32") {
+    // No match is reported as an ObjectNotFound error: that alone means "nothing listens". Any other error, or a
+    // missing cmdlet, fails the call instead of reading as an empty list.
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      `$found = Get-NetTCPConnection -State Listen -OwningProcess ${pid} -ErrorAction SilentlyContinue -ErrorVariable failures`,
+      "$other = @($failures | Where-Object { $_.CategoryInfo.Category -ne 'ObjectNotFound' })",
+      "if ($other.Count -gt 0) { [Console]::Error.WriteLine(($other | Out-String)); exit 2 }",
+      "$found | ForEach-Object { \"$($_.LocalAddress):$($_.LocalPort)\" }",
+      "exit 0",
+    ].join("; ");
+    return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" }).trim().split(/\r?\n/).filter(Boolean);
+  }
   if (process.platform !== "linux") {
     try {
       return execFileSync("lsof", ["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-p", String(pid)], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
@@ -93,7 +108,7 @@ test("pipe transport drives Chromium with zero listening TCP ports", { skip: !SH
   } finally {
     await connection.close();
     await new Promise(resolve => fixture.server.close(resolve));
-    rmSync(ud, { recursive: true, force: true });
+    removeTreeSync(ud);
   }
 });
 
@@ -124,6 +139,6 @@ test("JavaScript dialogs are auto-accepted and surfaced as events", { skip: !SHE
     assert.equal(await page.evaluate("document.readyState"), "complete");
   } finally {
     await connection.close();
-    rmSync(ud, { recursive: true, force: true });
+    removeTreeSync(ud);
   }
 });

@@ -6,6 +6,7 @@ import {
   OmOPage,
   SessionManager,
 } from "./core.js";
+import { acquireSharedConnection, canShareConnection } from "./shared-connections.js";
 
 export class TabRepository {
   #client;
@@ -100,10 +101,35 @@ export class BrowserConnection {
   }
 }
 
-export async function connect(cdpHttpUrl, options = {}) {
+// The browser's WebSocket URL carries its GUID: a ws:// URL is one already, an
+// HTTP endpoint answers it on /json/version (no WebSocket, so no consent prompt).
+async function browserKey(client, cdpUrl) {
+  if (/^wss?:\/\//.test(cdpUrl)) return cdpUrl;
+  return (await client.discoverVersion()).webSocketDebuggerUrl;
+}
+
+// Attaches in one process share one connection per browser (#76): each new
+// connection to a user's Chrome is a new "Allow remote debugging?" prompt.
+function createClient(cdpHttpUrl, options) {
   if (typeof cdpHttpUrl !== "string" || cdpHttpUrl.length === 0) {
     throw new TypeError("connect(cdpHttpUrl) requires a Chromium CDP HTTP URL");
   }
-  const client = new CdpClient({ cdpUrl: cdpHttpUrl, ...options.client, dialogPolicy: options.dialogPolicy ?? options.client?.dialogPolicy });
-  return new BrowserConnection(client, options).initialize();
+  return new CdpClient({ cdpUrl: cdpHttpUrl, ...options.client, dialogPolicy: options.dialogPolicy ?? options.client?.dialogPolicy });
+}
+
+// A connection of its own, never shared: for callers that lease or own the
+// connection themselves (the named-instance registry).
+export async function openConnection(cdpHttpUrl, options = {}) {
+  return new BrowserConnection(createClient(cdpHttpUrl, options), options).initialize();
+}
+
+export async function connect(cdpHttpUrl, options = {}) {
+  const client = createClient(cdpHttpUrl, options);
+  if (!canShareConnection(options)) return new BrowserConnection(client, options).initialize();
+  const key = await browserKey(client, cdpHttpUrl);
+  // Opened on the resolved GUID URL, never the port: a reconnect then reaches
+  // only this browser, and fails once it is gone (#79 review).
+  return acquireSharedConnection(key, options, {
+    open: () => openConnection(key, options),
+  });
 }

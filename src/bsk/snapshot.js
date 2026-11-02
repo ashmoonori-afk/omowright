@@ -41,9 +41,9 @@ export function buildSnapshotExpression(options = {}) {
 })()`;
 }
 
-export async function bskSnapshot(session, { tabId, timeoutMs, ...snapshotOptions } = {}) {
+export async function bskSnapshot(session, { tabId, timeoutMs, context, dependsOn, ...snapshotOptions } = {}) {
   const reply = await session.evaluate(buildSnapshotExpression(snapshotOptions), {
-    tabId, timeoutMs, awaitPromise: false, returnByValue: true,
+    tabId, timeoutMs, context, dependsOn, awaitPromise: false, returnByValue: true,
   });
   if (!reply || reply.ok === false) {
     const text = reply?.error?.text ?? "unknown error";
