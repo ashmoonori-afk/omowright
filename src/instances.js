@@ -246,10 +246,14 @@ function connectionOptions(options, profileDir) {
 // ask a browser to quit, and Chrome cleans up only on a clean quit. Only a live
 // browser on a live socket is asked: CdpClient.send would otherwise reconnect
 // through the recorded port, which is not an identity (another process may
-// hold it by now). Then, like the pipe transport, the browser gets a bounded
-// wait to exit before terminateChild steps in.
-async function askBrowserToQuit(connection, child) {
+// hold it by now). The connection is closed as soon as the request is answered,
+// before the quitting browser drops its socket: a drop on an open client starts
+// its auto-reconnect loop, which would keep the caller's process alive. Then,
+// like the pipe transport, the browser gets a bounded wait to exit before
+// terminateChild steps in.
+async function askBrowserToQuit(connection, child, disconnect) {
   if (child.exitCode !== null || child.signalCode !== null || !connection.cdp.isConnected) {
+    await disconnect();
     return false;
   }
   const exited = new Promise((resolve) => child.once("exit", resolve));
@@ -259,6 +263,7 @@ async function askBrowserToQuit(connection, child) {
       .then(() => true, () => false),
     exited.then(() => true),
   ]);
+  await disconnect();
   if (child.exitCode === null && child.signalCode === null) {
     let timer;
     await Promise.race([
@@ -335,12 +340,13 @@ async function launchNamed(
     const disconnect = connection.close.bind(connection);
     connection.close = async () => {
       let failure;
-      const quitRequested = await askBrowserToQuit(connection, child);
-      try {
-        await disconnect();
-      } catch (error) {
-        failure = error;
-      }
+      const quitRequested = await askBrowserToQuit(connection, child, async () => {
+        try {
+          await disconnect();
+        } catch (error) {
+          failure = error;
+        }
+      });
       await terminateChild(child, { quitRequested });
       // The browser this record points at is gone, so the record goes with it
       // instead of waiting for the next caller to clean it up.
