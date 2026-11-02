@@ -69,7 +69,8 @@ Every tool below is exported from `src/index.js`, the same import as the core
 loop; the module files next to it are implementation detail.
 
 - `connectNamed(name, { browserPath, browserArgs, profileDir, registryRoot?,
-  probeTimeoutMs?, launchTimeoutMs?, connectTimeoutMs?, lockTimeoutMs? })`:
+  dialogPolicy?, probeTimeoutMs?, launchTimeoutMs?, connectTimeoutMs?,
+  lockTimeoutMs? })`:
   attach-or-launch a named Chromium. A healthy registered instance is attached;
   a stale record is cleaned up and relaunched; a live pid whose recorded port
   refuses connections, or answers as a different browser, is treated as a reused
@@ -90,6 +91,19 @@ loop; the module files next to it are implementation detail.
   without `name`) expose no port at all.
   `newTab()` works on both paths; `close()` from the launcher terminates the
   browser and removes its record, from an attached client it only detaches.
+  Attaches in one process share one CDP connection per browser, because
+  Chrome asks the user to allow remote debugging once per connection: each
+  attach returns a handle on it, `close()` releases that handle, and the last
+  release disconnects. A dropped socket is reconnected once, and a browser
+  with another GUID always gets its own connection. Callers passing different
+  connection options (storage root, client options, `dialogPolicy`) are not
+  shared. A holder never changes what another holder gets: on a shared handle
+  `setDialogPolicy` throws `SharedConnectionError` (`error.code ===
+  "shared_connection"`; pass `dialogPolicy` when attaching instead), a sole holder's `setDialogPolicy` works and that
+  connection is never shared again, properties set on a handle stay on it,
+  the shared client can't be written through it, and listeners added through
+  `handle.cdp` are removed by that handle's `close()`. `setDialogPolicy(undefined)`
+  resets to the default (accept every dialog).
   `listInstances()` returns every record (`{ name, pid, endpoint,
   webSocketDebuggerUrl, profileDir, browserPath, startedAt }`) with `alive` /
   `responsive` liveness.
@@ -161,8 +175,11 @@ loop; the module files next to it are implementation detail.
   `press`, `select`, `focus`, `blur`, `scrollTo`, `wheel`, `evaluate`,
   `tabList`, `tabCreate`, `tabClose`, `tabSelect`, `tabBorrow`, `tabReturn`,
   `waitForNavigation`, `requestHelp`, `console`, `network`, `resize`,
-  `emulate`, `stop()`. Targets: `"e3"` / `"@e3"` (daemon refs), a CSS
-  selector, or `{ captureId, x, y }`.
+  `emulate`, `cooperate(action)`, `stop()`. Targets: `"e3"` / `"@e3"` (daemon
+  refs), a CSS selector, or `{ captureId, x, y }`. BrowserSkill 0.4 refuses
+  page actions (`cooperation_sync_required`) without `{ context }` from the
+  latest `cooperate("sync")`; `dependsOn` narrows that check
+  (`skills/omowright/references/browserskill.md`).
 - `bskSnapshot(session, options)`: OmOWright `{ tree, refs, css }` from an
   attached tab with no page global and no DOM mutation; `css[ref]` is `null`
   inside shadow roots.

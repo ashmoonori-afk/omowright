@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { watch } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -12,8 +11,15 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { connect } from "./connection.js";
+import { profileDirFromArgs, terminateChild } from "./browser-process.js";
+import { openConnection } from "./connection.js";
 import { isPidAlive, unlinkIfPresent, withLock } from "./instance-lock.js";
+import {
+  assertLaunchedBrowser,
+  discoverLaunchedEndpoint,
+  snapshotActivePort,
+} from "./launch-endpoint.js";
+import { acquireSharedConnection } from "./shared-connections.js";
 
 const RECORD_VERSION = 2;
 const DEFAULT_REGISTRY_ROOT = path.join(
@@ -26,6 +32,7 @@ const DEFAULT_REGISTRY_ROOT = path.join(
 const DEFAULT_PROBE_TIMEOUT_MS = 1_000;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 10_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+const BROWSER_CLOSE_TIMEOUT_MS = 2_000;
 // Waiting for the lock has to outlast the slowest honest critical section
 // (probe + launch + CDP attach); a shorter budget makes a second caller give up
 // at the exact moment the first one is about to publish its record.
@@ -182,7 +189,7 @@ function nameLockOptions(options) {
 // `/json/version` answering proves nothing about the WebSocket upgrade behind
 // it, so the session handshake carries its own bound.
 async function connectWithin(endpoint, options, timeoutMs) {
-  const pending = connect(endpoint, options);
+  const pending = openConnection(endpoint, options);
   let timer;
   try {
     return await Promise.race([
@@ -217,142 +224,6 @@ async function removeOwnedRecord(recordPath, name, pid) {
   await unlinkIfPresent(recordPath);
 }
 
-function profileDirFromArgs(browserArgs) {
-  for (let index = 0; index < browserArgs.length; index += 1) {
-    const argument = browserArgs[index];
-    if (argument === "--user-data-dir" && browserArgs[index + 1]) {
-      return path.resolve(browserArgs[index + 1]);
-    }
-    if (argument.startsWith("--user-data-dir=")) {
-      return path.resolve(argument.slice("--user-data-dir=".length));
-    }
-  }
-  return null;
-}
-
-function httpEndpointFromWebSocket(webSocketUrl) {
-  const endpoint = new URL(webSocketUrl);
-  endpoint.protocol = endpoint.protocol === "wss:" ? "https:" : "http:";
-  endpoint.pathname = "/";
-  endpoint.search = "";
-  endpoint.hash = "";
-  return endpoint.toString().replace(/\/$/, "");
-}
-
-function parseActivePort(text) {
-  const [portLine] = text.trim().split(/\r?\n/);
-  const port = Number(portLine);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) return null;
-  return `http://127.0.0.1:${port}`;
-}
-
-async function terminateBrowser(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise((resolve) => child.once("exit", resolve));
-  child.kill("SIGTERM");
-  let forceTimer;
-  const force = new Promise((resolve) => {
-    forceTimer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-      resolve();
-    }, 5_000);
-  });
-  await Promise.race([exited, force]);
-  clearTimeout(forceTimer);
-  if (child.exitCode === null && child.signalCode === null) await exited;
-}
-
-async function discoverLaunchedEndpoint(
-  child,
-  { profileDir, timeoutMs = DEFAULT_LAUNCH_TIMEOUT_MS } = {},
-) {
-  const activePortPath = profileDir
-    ? path.join(profileDir, "DevToolsActivePort")
-    : null;
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let stderr = "";
-    let activePortWatcher;
-    let activePortRead = false;
-    const cleanups = [];
-
-    const finish = (error, endpoint) => {
-      if (settled) return;
-      settled = true;
-      for (const cleanup of cleanups.splice(0)) cleanup();
-      activePortWatcher?.close();
-      if (error) reject(error);
-      else resolve(endpoint);
-    };
-
-    const tryActivePort = async () => {
-      if (!activePortPath || activePortRead || settled) return;
-      activePortRead = true;
-      try {
-        const endpoint = parseActivePort(
-          await readFile(activePortPath, "utf8"),
-        );
-        if (endpoint) finish(null, endpoint);
-      } catch (error) {
-        if (error?.code !== "ENOENT") finish(error);
-      } finally {
-        activePortRead = false;
-      }
-    };
-
-    const onStderr = (chunk) => {
-      stderr = `${stderr}${chunk}`.slice(-16_384);
-      const match = /DevTools listening on (ws:\/\/\S+)/.exec(stderr);
-      if (match) finish(null, httpEndpointFromWebSocket(match[1]));
-      else void tryActivePort();
-    };
-    const onError = (error) => finish(error);
-    const onExit = (code, signal) => {
-      finish(
-        new Error(
-          `browser exited before exposing DevTools (code ${code}, signal ${signal ?? "none"})${stderr ? `\n${stderr}` : ""}`,
-        ),
-      );
-    };
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", onStderr);
-    child.once("error", onError);
-    child.once("exit", onExit);
-    cleanups.push(() => child.stderr.off("data", onStderr));
-    cleanups.push(() => child.off("error", onError));
-    cleanups.push(() => child.off("exit", onExit));
-
-    if (activePortPath) {
-      try {
-        activePortWatcher = watch(profileDir, (event, filename) => {
-          if (
-            (event === "rename" || event === "change") &&
-            (!filename ||
-              filename.toString() === path.basename(activePortPath))
-          ) {
-            void tryActivePort();
-          }
-        });
-      } catch (error) {
-        if (error?.code !== "ENOENT") finish(error);
-      }
-      void tryActivePort();
-    }
-
-    const timeout = setTimeout(() => {
-      finish(
-        new Error(
-          `browser did not expose a DevTools endpoint within ${timeoutMs}ms${stderr ? `\n${stderr}` : ""}`,
-        ),
-      );
-    }, timeoutMs);
-    cleanups.push(() => clearTimeout(timeout));
-  });
-}
-
 function connectionOptions(options, profileDir) {
   const result = { ...(options.connectionOptions ?? {}) };
   if (options.storageRoot !== undefined) result.storageRoot = options.storageRoot;
@@ -365,7 +236,43 @@ function connectionOptions(options, profileDir) {
       ...options.client,
     };
   }
+  // Part of the sharing key too: callers asking for different dialog policies
+  // never share one connection.
+  if (options.dialogPolicy !== undefined) result.dialogPolicy = options.dialogPolicy;
   return result;
+}
+
+// Asked over CDP first, as the pipe transport does: on Windows no signal can
+// ask a browser to quit, and Chrome cleans up only on a clean quit. Only a live
+// browser on a live socket is asked: CdpClient.send would otherwise reconnect
+// through the recorded port, which is not an identity (another process may
+// hold it by now). The connection is closed as soon as the request is answered,
+// before the quitting browser drops its socket: a drop on an open client starts
+// its auto-reconnect loop, which would keep the caller's process alive. Then,
+// like the pipe transport, the browser gets a bounded wait to exit before
+// terminateChild steps in.
+async function askBrowserToQuit(connection, child, disconnect) {
+  if (child.exitCode !== null || child.signalCode !== null || !connection.cdp.isConnected) {
+    await disconnect();
+    return false;
+  }
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  const quitRequested = await Promise.race([
+    connection.cdp
+      .send("Browser.close", undefined, undefined, { timeoutMs: BROWSER_CLOSE_TIMEOUT_MS })
+      .then(() => true, () => false),
+    exited.then(() => true),
+  ]);
+  await disconnect();
+  if (child.exitCode === null && child.signalCode === null) {
+    let timer;
+    await Promise.race([
+      exited,
+      new Promise((resolve) => { timer = setTimeout(resolve, BROWSER_CLOSE_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+  }
+  return quitRequested;
 }
 
 async function launchNamed(
@@ -382,6 +289,7 @@ async function launchNamed(
   const profileDir = options.profileDir
     ? path.resolve(options.profileDir)
     : profileDirFromArgs(browserArgs);
+  const previousActivePort = await snapshotActivePort(profileDir);
   const child = spawn(
     options.browserPath,
     [
@@ -390,6 +298,13 @@ async function launchNamed(
       "--remote-debugging-port=0",
     ],
     {
+      // A named browser is shared through the registry, so it has to outlive
+      // the process that launched it. On Windows libuv puts every non-detached
+      // child in a kill-on-close job object, which kills the browser the
+      // moment its launcher exits (#90); detached keeps it out of that job
+      // (DETACHED_PROCESS also gives a console-subsystem browser no console).
+      // No windowsHide: it would start a headful browser's window hidden.
+      ...(process.platform === "win32" ? { detached: true } : {}),
       ...(options.spawnOptions ?? {}),
       stdio: ["ignore", "ignore", "pipe"],
     },
@@ -398,10 +313,12 @@ async function launchNamed(
   let connection;
   try {
     const launchTimeoutMs = options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS;
-    const endpoint = await discoverLaunchedEndpoint(child, {
+    const report = await discoverLaunchedEndpoint(child, {
       profileDir,
       timeoutMs: launchTimeoutMs,
+      previousActivePort,
     });
+    const { endpoint } = report;
     // The browser's own WebSocket URL carries its GUID: recording it makes a
     // later attach prove it reached this browser and not whatever else ends up
     // on the port once this pid is gone.
@@ -409,6 +326,7 @@ async function launchNamed(
       endpoint,
       launchTimeoutMs,
     );
+    assertLaunchedBrowser(child, report, webSocketDebuggerUrl);
     connection = await connectWithin(
       endpoint,
       connectionOptions(options, profileDir),
@@ -429,12 +347,14 @@ async function launchNamed(
     const disconnect = connection.close.bind(connection);
     connection.close = async () => {
       let failure;
-      try {
-        await disconnect();
-      } catch (error) {
-        failure = error;
-      }
-      await terminateBrowser(child);
+      const quitRequested = await askBrowserToQuit(connection, child, async () => {
+        try {
+          await disconnect();
+        } catch (error) {
+          failure = error;
+        }
+      });
+      await terminateChild(child, { quitRequested });
       // The browser this record points at is gone, so the record goes with it
       // instead of waiting for the next caller to clean it up.
       try {
@@ -449,7 +369,7 @@ async function launchNamed(
     return connection;
   } catch (error) {
     await connection?.close().catch(() => {});
-    await terminateBrowser(child);
+    await terminateChild(child);
     throw error;
   }
 }
@@ -507,11 +427,19 @@ async function attachOrLaunch(normalizedName, paths, options) {
       if (
         version?.webSocketDebuggerUrl === loaded.record.webSocketDebuggerUrl
       ) {
+        // Connecting to the recorded GUID URL, not the port, keeps the shared
+        // connection's auto-reconnect from landing on a different browser.
+        const { webSocketDebuggerUrl } = loaded.record;
+        const timeoutMs = resolveConnectTimeoutMs(options);
         try {
-          return await connectWithin(
-            loaded.record.endpoint,
+          return await acquireSharedConnection(
+            webSocketDebuggerUrl,
             connectionOptions(options, loaded.record.profileDir),
-            resolveConnectTimeoutMs(options),
+            {
+              open: (shared) =>
+                connectWithin(webSocketDebuggerUrl, shared, timeoutMs),
+              timeoutMs,
+            },
           );
         } catch (error) {
           throw new Error(

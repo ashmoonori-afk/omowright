@@ -35,7 +35,7 @@ const FUNCTION_EXPORTS = [
   "resolveBskHome",
 ];
 
-const CLASS_EXPORTS = ["BskIpcClient", "BskRpcError", "BskSession"];
+const CLASS_EXPORTS = ["BskIpcClient", "BskRpcError", "BskSession", "SharedConnectionError"];
 
 test("package entrypoint exports the new public surfaces", () => {
   for (const name of FUNCTION_EXPORTS) {

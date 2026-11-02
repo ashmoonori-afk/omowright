@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, globSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connectPipe } from "../src/index.js";
 import { buildSnapshotExpression, bskSnapshot } from "../src/bsk/snapshot.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const home = process.env.HOME;
@@ -49,7 +50,7 @@ async function withPage(fn) {
     await fn({ page, mainWorldEvaluate });
   } finally {
     await browser.close();
-    rmSync(profile, { recursive: true, force: true });
+    removeTreeSync(profile);
   }
 }
 

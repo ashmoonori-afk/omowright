@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, globSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { connectPipe, createAgentTabs } from "../src/index.js";
 import { DEVICE_PRESETS, emulate } from "../src/emulate.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -207,7 +208,7 @@ test("emulate(page, 'iphone-14') live test", { skip: !SHELL && "no chromium bina
     await page.close();
   } finally {
     if (connection) await connection.close();
-    rmSync(ud, { recursive: true, force: true });
+    removeTreeSync(ud);
   }
 });
 
@@ -244,6 +245,6 @@ test("emulate(page, null) live restore test", { skip: !SHELL && "no chromium bin
     await page.close();
   } finally {
     if (connection) await connection.close();
-    rmSync(ud, { recursive: true, force: true });
+    removeTreeSync(ud);
   }
 });

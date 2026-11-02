@@ -20,36 +20,35 @@ test("BrowserSkill store ids are the published Chrome and Edge listings", () => 
   assert.equal(BROWSERSKILL_EXTENSION_IDS.edge, "emacgiaaaiojkkpkddmmdfhmokgmnikg");
 });
 
+// Platform contract: a catalog row for a target platform uses that platform's separators on every host, so the
+// homes are target-shaped strings and `exists` is a set of target paths, never the host filesystem.
 test("detectBrowsers finds Chromium-family user-data dirs per platform from the injected home", () => {
-  const home = scratchHome();
-  try {
-    mkdirSync(path.join(home, "Library/Application Support/Google/Chrome/Default"), { recursive: true });
-    mkdirSync(path.join(home, "Library/Application Support/Microsoft Edge/Default"), { recursive: true });
-    const mac = detectBrowsers({ platform: "darwin", home, exists: (p) => p.startsWith(home) && existsSync(p) });
-    assert.deepEqual(mac.map((b) => b.id), ["chrome", "edge"]);
-    assert.equal(mac[0].userDataDir, path.join(home, "Library/Application Support/Google/Chrome"));
-    assert.equal(mac[0].store, "chrome");
-    assert.equal(mac[1].store, "edge");
-    assert.equal(mac[0].binary, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+  const existing = (...paths) => (p) => paths.includes(p);
+  const mac = detectBrowsers({ platform: "darwin", home: "/h", exists: existing("/h/Library/Application Support/Google/Chrome", "/h/Library/Application Support/Microsoft Edge") });
+  assert.deepEqual(mac.map((b) => b.id), ["chrome", "edge"]);
+  assert.equal(mac[0].userDataDir, "/h/Library/Application Support/Google/Chrome");
+  assert.equal(mac[0].store, "chrome");
+  assert.equal(mac[1].store, "edge");
+  assert.equal(mac[0].binary, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+  assert.deepEqual(mac[0].processNames, ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/h/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]);
 
-    mkdirSync(path.join(home, ".config/chromium/Default"), { recursive: true });
-    const linux = detectBrowsers({ platform: "linux", home, exists: (p) => p.startsWith(home) && existsSync(p) });
-    assert.deepEqual(linux.map((b) => b.id), ["chromium"]);
-    assert.equal(linux[0].store, "chrome");
+  const linux = detectBrowsers({ platform: "linux", home: "/h", exists: existing("/h/.config/chromium") });
+  assert.deepEqual(linux.map((b) => b.id), ["chromium"]);
+  assert.equal(linux[0].store, "chrome");
+  assert.equal(linux[0].userDataDir, "/h/.config/chromium");
 
-    const win = detectBrowsers({ platform: "win32", home, exists: (p) => p.startsWith(home) && existsSync(p), env: { LOCALAPPDATA: path.join(home, "AppData/Local") } });
-    assert.deepEqual(win, []);
-    mkdirSync(path.join(home, "AppData/Local/Google/Chrome/User Data/Default"), { recursive: true });
-    const win2 = detectBrowsers({ platform: "win32", home, exists: (p) => p.startsWith(home) && existsSync(p), env: { LOCALAPPDATA: path.join(home, "AppData/Local") } });
-    assert.equal(win2[0].id, "chrome");
-    assert.equal(win2[0].registryKey, "HKCU\\Software\\Google\\Chrome\\Extensions");
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  const env = { LOCALAPPDATA: "C:\\h\\AppData\\Local" };
+  assert.deepEqual(detectBrowsers({ platform: "win32", home: "C:\\h", env, exists: existing() }), []);
+  const win = detectBrowsers({ platform: "win32", home: "C:\\h", env, exists: existing("C:\\h\\AppData\\Local\\Google\\Chrome\\User Data") });
+  assert.equal(win[0].id, "chrome");
+  assert.equal(win[0].userDataDir, "C:\\h\\AppData\\Local\\Google\\Chrome\\User Data");
+  assert.equal(win[0].registryKey, "HKCU\\Software\\Google\\Chrome\\Extensions");
 });
 
 test("externalExtensionEntry points macOS at <user-data-dir>/External Extensions with the store update url", () => {
   const entry = externalExtensionEntry({ platform: "darwin", browser: { id: "chrome", store: "chrome", userDataDir: "/ud" } });
   assert.equal(entry.kind, "file");
-  assert.equal(entry.path, path.join("/ud", "External Extensions", "hhcmgoofomhgciiibhipgmgkgnoenaoi.json"));
+  assert.equal(entry.path, "/ud/External Extensions/hhcmgoofomhgciiibhipgmgkgnoenaoi.json");
   assert.deepEqual(JSON.parse(entry.content), { external_update_url: "https://clients2.google.com/service/update2/crx" });
   assert.equal(entry.needsRestart, true);
   assert.equal(entry.humanStep.includes("Enable"), true);

@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, globSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, globSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { connectPipe, createAgentTabs, createEvents } from "../src/index.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function browserPath() {
   const pinned = path.join(process.env.HOME ?? "", ".cloakbrowser/chromium-145.0.7632.109.2/Chromium.app/Contents/MacOS/Chromium");
@@ -26,5 +27,5 @@ test("pipe event bridge creates and closes an owned background page", { skip: !B
     assert.ok(openedPayload.url === "about:blank" || openedPayload.url === "", `unexpected initial URL: ${openedPayload.url}`);
     const closed = events.waitForEvent("tabClosed", { timeout: 10000, predicate: value => value.targetId === tab.targetId });
     await tabs.close(tab); assert.equal((await closed).targetId, tab.targetId);
-  } finally { await events.dispose(); await tabs.dispose({ closeOwned: false }); await connection.close(); rmSync(profile, { recursive: true, force: true }); }
+  } finally { await events.dispose(); await tabs.dispose({ closeOwned: false }); await connection.close(); removeTreeSync(profile); }
 });

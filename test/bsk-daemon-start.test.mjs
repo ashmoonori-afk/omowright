@@ -8,7 +8,10 @@ import { startDaemonWithCli, windowsDaemonTaskName } from "../src/bsk/daemon-inf
 
 // Platform contract: when bsk cannot detach its daemon from the caller's Job Object, the start
 // must still succeed through a scheduled task that opens no console window, whatever the home path holds.
-const windowsOnly = { skip: process.platform !== "win32" };
+// Each case registers a real scheduled task and waits for it to run, about 6 s on Windows: past
+// bun test's 5 s default, which node --test does not have. 60 s stays above the inner bounds (status and
+// registration 20 s each, marker 15 s), so a hang still fails with their specific error first.
+const windowsOnly = { skip: process.platform !== "win32", timeout: 60_000 };
 const REFUSAL = "cannot start an independent Windows daemon; the host may prohibit Job Object breakaway";
 
 // A compiled stand-in for bsk: `status` refuses breakaway, `daemon start` records what the task gave it.

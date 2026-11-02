@@ -3,12 +3,13 @@
 // http://127.0.0.1:<portB>: same host, different *site*, which is what makes the iframe
 // an out-of-process frame under --site-per-process.
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, existsSync, globSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { connectPipe } from "../../src/index.js";
 import { targetCreationCapability } from "../../src/internal-capability.js";
+import { removeTreeSync } from "./remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -75,7 +76,7 @@ export async function launch() {
     connection,
     cleanup: async () => {
       await connection.close();
-      rmSync(ud, { recursive: true, force: true });
+      removeTreeSync(ud);
     },
   };
 }

@@ -56,7 +56,10 @@ await listInstances();
 
 `close()` on the launcher terminates the browser and removes its record; on an
 attached client it only detaches — the instance keeps running for the next
-`connectNamed`.
+`connectNamed`. Attaches in one process share one CDP connection per browser
+(Chrome asks to allow remote debugging once per connection): `close()`
+releases your handle and the last release disconnects, so keep one handle
+open across actions instead of attaching per action.
 `connectCloakProfile({ name })` and `omowright-cloak --name <name>` go through
 the same registry: same name, same instance. Without `name` both keep the
 zero-port pipe and never touch the registry.
