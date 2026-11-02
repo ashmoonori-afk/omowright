@@ -189,11 +189,12 @@ export class PipeCdpClient {
     this.#child = undefined;
     if (child && child.exitCode === null) {
       const exited = new Promise(resolve => child.once("exit", resolve));
+      let quitRequested = false;
       if (this.#connected) {
         await Promise.race([
           this.send("Browser.close", undefined, undefined, {
             timeoutMs: GRACEFUL_CLOSE_TIMEOUT_MS,
-          }).catch(() => {}),
+          }).then(() => { quitRequested = true; }, () => {}),
           exited,
         ]);
       }
@@ -205,7 +206,7 @@ export class PipeCdpClient {
           new Promise(resolve => setTimeout(resolve, GRACEFUL_CLOSE_TIMEOUT_MS)),
         ]);
       }
-      await terminateChild(child);
+      await terminateChild(child, { quitRequested });
       return;
     }
     this.#connected = false;

@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, globSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, globSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { connectPipe, createAgentTabs } from "../src/index.js";
 import { createTrace } from "../src/trace.js";
 import { startTraceServer } from "./fixtures/trace-server.mjs";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -80,8 +81,8 @@ test(
       assert.ok(lines.some(line => line.kind === "network" && line.url === `${server.url}api/click`), "click traffic is captured");
     } finally {
       await connection?.close();
-      rmSync(userDataDir, { recursive: true, force: true });
-      rmSync(traceDir, { recursive: true, force: true });
+      removeTreeSync(userDataDir);
+      removeTreeSync(traceDir);
       await server.close();
     }
   },

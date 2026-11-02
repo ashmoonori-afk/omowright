@@ -15,15 +15,36 @@ const { connectBrowserSkill, bskSnapshot } = await import("omowright");
 
 const session = await connectBrowserSkill({ name: "book a table", focused: false });
 await session.navigate("https://example.com/");
-const { tree, refs, css } = await bskSnapshot(session, { interactive: true });
+const sync = () => session.cooperate("sync").then((r) => r.context_id);
+const { tree, refs, css } = await bskSnapshot(session, { interactive: true, context: await sync() });
 // tree and refs look exactly like page.snapshot(); css[ref] is a light-DOM
 // selector for the same element (null inside shadow roots)
-await session.click({ selector: css.e3 });          // or session.click("@e3") after session.observe()
-await session.fill(css.e5, "hello", { clearBefore: true });
-await session.press("Enter");
+await session.click({ selector: css.e3 }, { context: await sync() });   // or "@e3" after session.observe()
+await session.fill(css.e5, "hello", { clearBefore: true, context: await sync() });
+await session.press("Enter", { context: await sync() });
 await session.waitForNavigation({ waitUntil: "load" });
 await session.stop();                                // ALWAYS: returns borrowed tabs, closes the Agent Window
 ```
+
+### Shared control (BrowserSkill 0.4+)
+
+The person at the keyboard can work in the task tab while the agent does. The
+extension therefore refuses every page action with `permission_denied` /
+`data.reason: "cooperation_sync_required"` unless it carries the
+`context_id` of the latest `session.cooperate("sync")`. A context is good
+for one action: sync, decide from what the sync reported, act with
+`{ context }`, then sync again. Gated: navigation (except the first
+navigation of the untouched blank tab), every input method, `evaluate` (and
+so `bskSnapshot`), `tabClose`, `resize`, `emulate`, `observe` with
+`probeHover`, and `screenshot({ fullPage: true })`. Reads (`observe`,
+`snapshot`, `getHtml`, `screenshot()`, `console`, `network`,
+`waitForNavigation`) need no context. `dependsOn: ["@e2", ...]` narrows the
+check to the observed regions the decision used.
+
+On `cooperation_sync_required`, call `session.cooperate("wait", { timeoutMs })`
+(at most 25 s) until it reports `ready`, sync again and replan from the live
+page; never replay the refused action blindly. `user_aborted` means the
+person stopped the task.
 
 `connectBrowserSkill` talks to the daemon over its Unix-socket IPC directly —
 no `bsk` process per call. It starts the daemon if needed (`bsk status`),

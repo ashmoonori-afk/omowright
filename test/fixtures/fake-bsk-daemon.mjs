@@ -9,11 +9,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultSocketPath } from "../../src/bsk/ipc-client.js";
 
-export async function startFakeBskDaemon({ handlers = {}, delayMs = 0 } = {}) {
+export async function startFakeBskDaemon({ handlers = {}, delayMs = 0, sockPathFor = defaultSocketPath } = {}) {
   const home = mkdtempSync(path.join(tmpdir(), "fake-bsk-home-"));
   mkdirSync(path.join(home, "run"));
   // Listen where the real daemon would for this home: run/daemon.sock, or the derived pipe on Windows.
-  const sockPath = defaultSocketPath(home);
+  // `sockPathFor` moves it elsewhere, so only daemon.json can lead a client to it.
+  const sockPath = sockPathFor(home);
   const requests = [];
   const sockets = new Set();
 

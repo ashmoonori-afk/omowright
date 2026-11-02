@@ -60,20 +60,24 @@ const WINDOWS = [
 
 export const BROWSER_IDS = Object.freeze([...new Set([...MAC, ...LINUX, ...WINDOWS].map((b) => b.id))]);
 
+// Paths are built for the TARGET platform, not the host: a darwin/linux row is the same on every host.
+export const pathFor = (platform) => (platform === "win32" ? path.win32 : path.posix);
+
 function macRow(b, home, exists) {
-  const apps = [path.join("/Applications", `${b.app}.app`), path.join(home, "Applications", `${b.app}.app`)];
+  const { join } = path.posix;
+  const apps = [join("/Applications", `${b.app}.app`), join(home, "Applications", `${b.app}.app`)];
   const appPath = apps.find((p) => exists(p)) ?? null;
-  const userDataDir = path.join(home, b.userData);
+  const userDataDir = join(home, b.userData);
   return {
     id: b.id, label: b.label, store: b.store, userDataDir,
-    binary: path.join(appPath ?? apps[0], "Contents", "MacOS", b.app), bundleId: b.bundleId,
-    processNames: apps.map((a) => path.join(a, "Contents", "MacOS", b.app)), defaultIds: [b.bundleId.toLowerCase()], externalExtensions: b.externalExtensions !== false,
+    binary: join(appPath ?? apps[0], "Contents", "MacOS", b.app), bundleId: b.bundleId,
+    processNames: apps.map((a) => join(a, "Contents", "MacOS", b.app)), defaultIds: [b.bundleId.toLowerCase()], externalExtensions: b.externalExtensions !== false,
     installed: appPath !== null || exists(userDataDir), hasProfile: exists(userDataDir),
   };
 }
 
 function linuxRow(b, home, exists) {
-  const userDataDir = path.join(home, b.userData);
+  const userDataDir = path.posix.join(home, b.userData);
   const binary = b.binaries.find((p) => exists(p)) ?? null;
   return {
     id: b.id, label: b.label, store: b.store, userDataDir, binary,
@@ -84,10 +88,11 @@ function linuxRow(b, home, exists) {
 }
 
 function windowsRow(b, env, home, exists) {
-  const localAppData = env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
+  const { join } = path.win32;
+  const localAppData = env.LOCALAPPDATA ?? join(home, "AppData", "Local");
   const programFiles = [localAppData, env.PROGRAMFILES, env["PROGRAMFILES(X86)"], "C:\\Program Files", "C:\\Program Files (x86)"].filter(Boolean);
-  const userDataDir = path.join(localAppData, b.userData);
-  const binary = programFiles.map((root) => path.join(root, b.binaryRel)).find((p) => exists(p)) ?? null;
+  const userDataDir = join(localAppData, b.userData);
+  const binary = programFiles.map((root) => join(root, b.binaryRel)).find((p) => exists(p)) ?? null;
   return {
     id: b.id, label: b.label, store: b.store, userDataDir, registryKey: b.registryKey, binary,
     processNames: b.processNames, defaultIds: b.progIds, externalExtensions: b.externalExtensions !== false,

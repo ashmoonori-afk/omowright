@@ -177,8 +177,11 @@ loop; the module files next to it are implementation detail.
   `press`, `select`, `focus`, `blur`, `scrollTo`, `wheel`, `evaluate`,
   `tabList`, `tabCreate`, `tabClose`, `tabSelect`, `tabBorrow`, `tabReturn`,
   `waitForNavigation`, `requestHelp`, `console`, `network`, `resize`,
-  `emulate`, `stop()`. Targets: `"e3"` / `"@e3"` (daemon refs), a CSS
-  selector, or `{ captureId, x, y }`.
+  `emulate`, `cooperate(action)`, `stop()`. Targets: `"e3"` / `"@e3"` (daemon
+  refs), a CSS selector, or `{ captureId, x, y }`. BrowserSkill 0.4 refuses
+  page actions (`cooperation_sync_required`) without `{ context }` from the
+  latest `cooperate("sync")`; `dependsOn` narrows that check
+  (`skills/omowright/references/browserskill.md`).
 - `bskSnapshot(session, options)`: OmOWright `{ tree, refs, css }` from an
   attached tab with no page global and no DOM mutation; `css[ref]` is `null`
   inside shadow roots.
