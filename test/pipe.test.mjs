@@ -57,7 +57,13 @@ test("readiness failure surfaces the drained browser stdio tail", { timeout: 15_
 // tests use the fake browser above and never need a real Chrome. The pidfile and
 // orphan-reap tests live in browser-pidfile.test.mjs.
 
-test("close() sends SIGTERM and waits the grace window before SIGKILL", { timeout: 20_000 }, async () => {
+// A signal cannot ask a Windows process to quit (child.kill() is TerminateProcess
+// whatever the signal), so these two run on POSIX and the Windows pair below
+// asserts the quit request Windows does have: CDP Browser.close.
+const posixSignals = { skip: process.platform === "win32" && "no signal can ask a Windows process to quit" };
+const windowsOnly = { skip: process.platform !== "win32" && "the POSIX pair above covers signals" };
+
+test("close() sends SIGTERM and waits the grace window before SIGKILL", { ...posixSignals, timeout: 20_000 }, async () => {
   const dir = scratchDir();
   const { client, logPath } = lifecycleClient(dir, "ignore");
   try {
@@ -75,7 +81,7 @@ test("close() sends SIGTERM and waits the grace window before SIGKILL", { timeou
   }
 });
 
-test("close() lets a browser that honours SIGTERM quit cleanly, with no SIGKILL", { timeout: 20_000 }, async () => {
+test("close() lets a browser that honours SIGTERM quit cleanly, with no SIGKILL", { ...posixSignals, timeout: 20_000 }, async () => {
   const dir = scratchDir();
   const { client, logPath } = lifecycleClient(dir, "exit");
   try {
@@ -85,6 +91,38 @@ test("close() lets a browser that honours SIGTERM quit cleanly, with no SIGKILL"
     await client.close();
     assert.deepEqual(await exit, { code: 0, signal: null });
     assert.ok(readEvents(logPath).some((entry) => entry.event === "TERM"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("on Windows close() asks over CDP and waits the grace window before terminating", { ...windowsOnly, timeout: 20_000 }, async () => {
+  const dir = scratchDir();
+  const { client, logPath } = lifecycleClient(dir, "ignore", [], "signals.log", "ignore");
+  try {
+    await client.ensureConnected();
+    const child = client.childProcess;
+    const exit = new Promise((resolve) => child.once("exit", () => resolve(Date.now())));
+    await client.close();
+    const at = await exit;
+    const asked = readEvents(logPath).find((entry) => entry.event === "CLOSE");
+    assert.ok(asked, "browser was terminated without being asked to quit over CDP");
+    assert.ok(at - asked.at >= TERM_GRACE_MS - 500, `terminated ${at - asked.at} ms after Browser.close; expected a ~${TERM_GRACE_MS} ms grace`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("on Windows close() lets a browser that honours Browser.close quit cleanly, with no forced kill", { ...windowsOnly, timeout: 20_000 }, async () => {
+  const dir = scratchDir();
+  const { client, logPath } = lifecycleClient(dir, "ignore", [], "signals.log", "exit");
+  try {
+    await client.ensureConnected();
+    const child = client.childProcess;
+    const exit = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+    await client.close();
+    assert.deepEqual(await exit, { code: 0, signal: null });
+    assert.ok(readEvents(logPath).some((entry) => entry.event === "CLOSE"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -54,6 +54,11 @@ webSockets.on("connection", (webSocket) => {
       return;
     }
     if (typeof message.id !== "number") return;
+    // Like Chrome: answer Browser.close, then quit.
+    if (message.method === "Browser.close") {
+      webSocket.send(JSON.stringify({ id: message.id, result: {} }), shutdown);
+      return;
+    }
     const result = message.method === "Browser.getVersion"
       ? { product: "FakeNamedBrowser/1.0", protocolVersion: "1.3" }
       : {};

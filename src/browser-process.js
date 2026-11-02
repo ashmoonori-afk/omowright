@@ -1,7 +1,8 @@
 // Lifecycle of a browser the pipe transport spawns. Chrome removes its per-launch
 // state (the macOS code-sign clone of the app bundle, a temp profile) only when
-// it quits cleanly, so nothing here sends SIGKILL before a SIGTERM and a bounded
-// grace window (omo#12067).
+// it quits cleanly, so nothing here sends SIGKILL before a quit request and a
+// bounded grace window (omo#12067). On POSIX the request is SIGTERM; on Windows
+// it is the CDP Browser.close the caller sends first (see terminateChild).
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -27,14 +28,24 @@ export function profileDirFromArgs(browserArgs) {
   return null;
 }
 
-export async function terminateChild(child) {
+// On Windows child.kill() is TerminateProcess whatever signal it names, so no
+// signal can ask the browser to quit. There the request is the CDP
+// Browser.close the caller already sent (`quitRequested`), and the grace window
+// runs only when one was sent.
+const signalsCanAskToQuit = process.platform !== "win32";
+
+export async function terminateChild(child, { quitRequested = false } = {}) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise((resolve) => child.once("exit", resolve));
-  try { child.kill("SIGTERM"); } catch {}
-  let timer;
-  const graceOver = new Promise((resolve) => { timer = setTimeout(resolve, TERM_GRACE_MS); });
-  await Promise.race([exited, graceOver]);
-  clearTimeout(timer);
+  if (signalsCanAskToQuit) {
+    try { child.kill("SIGTERM"); } catch {}
+  }
+  if (signalsCanAskToQuit || quitRequested) {
+    let timer;
+    const graceOver = new Promise((resolve) => { timer = setTimeout(resolve, TERM_GRACE_MS); });
+    await Promise.race([exited, graceOver]);
+    clearTimeout(timer);
+  }
   if (child.exitCode === null && child.signalCode === null) {
     try { child.kill("SIGKILL"); } catch {}
     await exited;

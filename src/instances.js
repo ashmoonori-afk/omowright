@@ -32,6 +32,7 @@ const DEFAULT_REGISTRY_ROOT = path.join(
 const DEFAULT_PROBE_TIMEOUT_MS = 1_000;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 10_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+const BROWSER_CLOSE_TIMEOUT_MS = 2_000;
 // Waiting for the lock has to outlast the slowest honest critical section
 // (probe + launch + CDP attach); a shorter budget makes a second caller give up
 // at the exact moment the first one is about to publish its record.
@@ -306,12 +307,17 @@ async function launchNamed(
     const disconnect = connection.close.bind(connection);
     connection.close = async () => {
       let failure;
+      // Asked over CDP first, as the pipe transport does: on Windows no signal
+      // can ask a browser to quit, and Chrome cleans up only on a clean quit.
+      const quitRequested = await connection.cdp
+        .send("Browser.close", undefined, undefined, { timeoutMs: BROWSER_CLOSE_TIMEOUT_MS })
+        .then(() => true, () => false);
       try {
         await disconnect();
       } catch (error) {
         failure = error;
       }
-      await terminateChild(child);
+      await terminateChild(child, { quitRequested });
       // The browser this record points at is gone, so the record goes with it
       // instead of waiting for the next caller to clean it up.
       try {
