@@ -133,11 +133,18 @@ usage signals from `probeBrowserSignals`:
 | Running now | the app bundle in `/Applications` or `~/Applications` (automation builds elsewhere do not count) | process name | `tasklist` image |
 | Recent use | `Local State` / `Default/History` mtime within 7 days | same | same |
 
-The decision, in order: an explicit `browser` option or `OMOWRIGHT_BROWSER`;
-the default browser when it is also in use, or when nothing else is; the only
-browser in use when no default can be read. Everything else — the default is
-Safari or Firefox, the default is idle while another browser runs, several
-browsers are in use, or nothing shows use — returns `needsChoice: true` with
+The decision, in order, with the `confidence` each step reports: an explicit
+`browser` option or `OMOWRIGHT_BROWSER` (`explicit`); the one browser whose
+extension is already connected to the daemon (`connected`); the default
+browser when it is also in use (`default-and-in-use`), or when nothing else is
+(`default`); the only browser in use (`only-in-use`), the only one running
+(`only-running`) or the only one installed (`only-installed`) when no default
+can be read. The extension names its browser from the user agent, and forks
+such as Brave and Arc report `chrome`, so a `chrome` or `chromium` name counts
+as connected only when exactly one browser able to send it is running.
+Everything else — the default is Safari or Firefox, the default is idle while
+another browser runs, several browsers are in use, or nothing shows use —
+returns `needsChoice: true` with
 every candidate and its signals, and registers nothing. Ask the user; if the
 agent keeps a memory, look there first and record the answer.
 
