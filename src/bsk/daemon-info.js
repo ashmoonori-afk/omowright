@@ -92,7 +92,8 @@ export async function startDaemonWithCli({ home, env = process.env, bskBin = fin
   if (process.platform === "win32" && NO_BREAKAWAY.test(status.output)) {
     const task = await startDaemonInWindowsTask({ home, bskBin, timeoutMs });
     if (task.code === 0) return;
-    throw new Error(`registering the bsk daemon task exited with ${task.code}${task.output ? `: ${task.output}` : ""}`);
+    // Keep bsk's refusal in the message: it is why a retry cannot help, and bskDoctor reads it.
+    throw new Error(`${status.output}; registering the bsk daemon task exited with ${task.code}${task.output ? `: ${task.output}` : ""}`);
   }
   throw new Error(`bsk status exited with ${status.code}${status.output ? `: ${status.output}` : ""}`);
 }

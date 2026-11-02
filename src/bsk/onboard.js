@@ -27,8 +27,17 @@ async function daemonReport(client, waitForBrowserMs) {
     const status = await client.call("system.status", waitForBrowserMs > 0 ? { wait_for_browser_ms: waitForBrowserMs } : {}, { idPrefix: "status" });
     return { running: true, version: status.daemon_version, protocolVersion: status.protocol_version, browsers: status.browsers ?? [], sessions: status.sessions ?? [] };
   } catch (error) {
-    return { running: false, error: error.message, code: error.code, browsers: [], sessions: [] };
+    return { running: false, error: error.message, code: error.code, startBlocked: NO_BREAKAWAY.test(error.message), browsers: [], sessions: [] };
   }
+}
+
+// bsk's refusal when the host's Windows Job Object forbids breakaway: a detached start fails the same way every retry.
+const NO_BREAKAWAY = /Job Object|breakaway/i;
+const FOREGROUND_STEP = "run `bsk daemon start --foreground` in a persistent background session of the agent host (one that outlives the command, not a one-shot shell call), then check it with `bsk status` from a separate call";
+
+function daemonStep(daemon) {
+  if (daemon.startBlocked) return `Start the BrowserSkill daemon: this host does not let a command detach it (Windows Job Object breakaway is prohibited), so retrying \`bsk status\` or \`bsk daemon start\` fails the same way; ${FOREGROUND_STEP}.`;
+  return `Start the BrowserSkill daemon: bskOnboard() (or \`bsk status\` once) starts it. If the host reaps background processes or the start fails, ${FOREGROUND_STEP}; do not retry a detached \`bsk daemon start\`.`;
 }
 
 const NO_BROWSER_STEP = `No Chromium-family browser was found. Install one (Chrome, Edge, Brave, Arc, ...), then add the extension from ${STORE_PAGE_URLS.chrome}.`;
@@ -58,7 +67,7 @@ function choiceStep(identification) {
 function nextStepFor({ cli, daemon, browsers, browsersConnected, identification, primary }) {
   if (browsersConnected.length > 0) return null;
   if (!cli.installed) return "Install the bsk CLI (bskOnboard() runs the official installer).";
-  if (!daemon.running) return "Start the BrowserSkill daemon: run `bsk status` once, or `bsk daemon start` in the environment that owns it.";
+  if (!daemon.running) return daemonStep(daemon);
   if (browsers.length === 0 && !primary) return NO_BROWSER_STEP;
   if (identification.needsChoice) return choiceStep(identification);
   if (!primary.extensionRegistered && primary.registration.kind !== "store") return `Register the BrowserSkill extension for ${primary.label} (bskOnboard() does this), then let the user enable it.`;

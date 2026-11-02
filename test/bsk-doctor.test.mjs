@@ -102,6 +102,30 @@ test("bskDoctor without a daemon reports it instead of throwing", async () => {
   } finally { rmSync(home, { recursive: true, force: true }); rmSync(bskHome, { recursive: true, force: true }); }
 });
 
+test("a daemon start the host's Job Object refuses is named, and the next step is a foreground daemon, not another detached start", async () => {
+  const home = macHomeWithChrome();
+  const bskHome = mkdtempSync(path.join(tmpdir(), "omowright-blocked-"));
+  // What startDaemonWithCli throws on Windows when bsk refuses and the scheduled-task fallback fails too.
+  const refusal = "cannot start an independent Windows daemon; the host may prohibit Job Object breakaway; use `bsk daemon start --foreground` in a persistent host task or start from an independent terminal; registering the bsk daemon task exited with 1: Access is denied.";
+  const startingClient = () => new BskIpcClient({ home: bskHome, autoStart: true, startDaemon: async () => { throw new Error(refusal); } });
+  const common = { platform: "darwin", home, ...scoped(home), bskBin: "/fake/bsk", cliVersion: async () => "bsk 0.3.3", waitForBrowserMs: 0 };
+  try {
+    // bskOnboard starts the daemon itself, so this is where a refusal shows up.
+    const onboard = await bskOnboard({ ...common, client: startingClient(), waitTotalMs: 0 });
+    assert.equal(onboard.daemon.running, false);
+    assert.equal(onboard.daemon.startBlocked, true);
+
+    // bskDoctor's own client never starts the daemon; given a client that does, it reports the refusal the same way.
+    const report = await bskDoctor({ ...common, client: startingClient() });
+    assert.equal(report.daemon.startBlocked, true);
+    assert.match(report.nextStep, /bsk daemon start --foreground/);
+
+    const plain = await bskDoctor({ ...common, client: new BskIpcClient({ home: bskHome, autoStart: false }) });
+    assert.equal(plain.daemon.running, false);
+    assert.equal(plain.daemon.startBlocked, false, "a daemon that was never started is not a refused start");
+  } finally { rmSync(home, { recursive: true, force: true }); rmSync(bskHome, { recursive: true, force: true }); }
+});
+
 test("bskOnboard runs install -> daemon -> register and returns the single human step, then waits for the browser", async () => {
   let statusCalls = 0;
   const daemon = await startFakeBskDaemon({

@@ -114,6 +114,11 @@ if (!report.ready) {
 }
 ```
 
+`daemon.startBlocked: true` means the host refused a detached daemon start
+(Windows Job Object breakaway). Only a client that starts the daemon can see
+that, so `bskOnboard()` reports it; `bskDoctor()`'s default client has
+auto-start off and does not.
+
 ### Which browser gets the extension
 
 Exactly one: the browser the user actually uses. A profile directory on disk
