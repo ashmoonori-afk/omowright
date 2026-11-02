@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import {
   chmodSync,
@@ -109,9 +109,11 @@ test("resolveCloakProfile tightens existing metadata permissions", async () => {
 // with HOME inside the temp dir so even the default registry root derivation is
 // observable; if the anonymous path ever delegated to connectNamed, that child
 // would create the registry directories and both assertions below would fail.
-// The fake CloakBrowser is a shebang wrapper around the shared pipe fixture:
-// connectCloakProfile always puts its identity flags before extraArgs, so the
-// spawned browserPath itself must be the script and treat those flags as argv.
+// The fake CloakBrowser is the shared pipe fixture as a directly spawnable
+// executable: connectCloakProfile always puts its identity flags before
+// extraArgs, so the spawned browserPath itself must be the program and treat
+// those flags as argv. POSIX runs a shebang wrapper; Windows cannot spawn a
+// shebang file, so there the fixture is compiled into a real .exe.
 test("anonymous connectCloakProfile creates no registry artifacts", { timeout: 15_000 }, async () => {
   const homeDir = mkdtempSync(path.join(tmpdir(), "omowright-cloak-anon-"));
   const profileDir = path.join(homeDir, "cloak-profile");
@@ -123,12 +125,19 @@ test("anonymous connectCloakProfile creates no registry artifacts", { timeout: 1
     "omowright",
     "instances",
   );
-  const fakeBrowserPath = path.join(homeDir, "fake-cloak-browser");
-  writeFileSync(
-    fakeBrowserPath,
-    `#!${process.execPath}\nimport(${JSON.stringify(pathToFileURL(fakePipeBrowser).href)});\n`,
+  const fakeBrowserPath = path.join(
+    homeDir,
+    process.platform === "win32" ? "fake-cloak-browser.exe" : "fake-cloak-browser",
   );
-  chmodSync(fakeBrowserPath, 0o755);
+  if (process.platform === "win32") {
+    execFileSync("bun", ["build", "--compile", fakePipeBrowser, "--outfile", fakeBrowserPath], { stdio: "ignore" });
+  } else {
+    writeFileSync(
+      fakeBrowserPath,
+      `#!${process.execPath}\nimport(${JSON.stringify(pathToFileURL(fakePipeBrowser).href)});\n`,
+    );
+    chmodSync(fakeBrowserPath, 0o755);
+  }
   const entryPoint = pathToFileURL(
     fileURLToPath(new URL("../src/index.js", import.meta.url)),
   ).href;
