@@ -34,11 +34,19 @@ async function serveFixturePage() {
 }
 
 // Linux reads /proc directly (lsof is often absent there); Windows has no lsof, so it asks the TCP stack
-// through Get-NetTCPConnection (IPv4 and IPv6, locale-independent, empty when nothing listens); macOS lsof exits 1
-// when nothing matches.
+// through Get-NetTCPConnection (IPv4 and IPv6, locale-independent); macOS lsof exits 1 when nothing matches.
 function listeningTcpSockets(pid) {
   if (process.platform === "win32") {
-    const script = `Get-NetTCPConnection -State Listen -OwningProcess ${pid} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" }`;
+    // No match is reported as an ObjectNotFound error: that alone means "nothing listens". Any other error, or a
+    // missing cmdlet, fails the call instead of reading as an empty list.
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      `$found = Get-NetTCPConnection -State Listen -OwningProcess ${pid} -ErrorAction SilentlyContinue -ErrorVariable failures`,
+      "$other = @($failures | Where-Object { $_.CategoryInfo.Category -ne 'ObjectNotFound' })",
+      "if ($other.Count -gt 0) { [Console]::Error.WriteLine(($other | Out-String)); exit 2 }",
+      "$found | ForEach-Object { \"$($_.LocalAddress):$($_.LocalPort)\" }",
+      "exit 0",
+    ].join("; ");
     return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" }).trim().split(/\r?\n/).filter(Boolean);
   }
   if (process.platform !== "linux") {
