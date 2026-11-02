@@ -7,11 +7,22 @@ const INSTALL_SH = "https://raw.githubusercontent.com/Tencent/BrowserSkill/main/
 const INSTALL_PS1 = "https://raw.githubusercontent.com/Tencent/BrowserSkill/main/install.ps1";
 const RC_FILES = [".zshrc", ".bashrc", ".profile"];
 
+// A PowerShell 7 parent hands its own module dirs to the Windows PowerShell 5.1
+// child through PSModulePath. They shadow 5.1's Microsoft.PowerShell.Utility, so
+// Get-FileHash is missing and the installer dies at checksum verification. Keep
+// every entry except PowerShell 7's (...\PowerShell\..., never ...\WindowsPowerShell\...).
+function windowsPowerShellEnv(env) {
+  const key = Object.keys(process.env).find((name) => name.toUpperCase() === "PSMODULEPATH");
+  if (!key) return env;
+  const kept = process.env[key].split(";").filter((entry) => entry && !/[\\/]PowerShell[\\/]/i.test(entry));
+  return { ...env, [key]: kept.length > 0 ? kept.join(";") : undefined };
+}
+
 export function cliInstallCommand({ platform = process.platform, installDir, version } = {}) {
   const env = { BSK_INSTALL_DIR: installDir };
   if (version) env.BSK_VERSION = version;
   if (platform === "win32") {
-    return { command: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm ${INSTALL_PS1} | iex`], env };
+    return { command: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm ${INSTALL_PS1} | iex`], env: windowsPowerShellEnv(env) };
   }
   return { command: "sh", args: ["-c", `curl -fsSL ${INSTALL_SH} | sh`], env };
 }
