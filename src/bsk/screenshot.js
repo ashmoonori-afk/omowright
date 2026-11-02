@@ -1,4 +1,4 @@
-export async function captureScreenshot(session, { ref, tabId, fullPage = false, scope, timeoutMs } = {}) {
+export async function captureScreenshot(session, { ref, tabId, fullPage = false, scope, timeoutMs, context, dependsOn } = {}) {
   if (!fullPage) {
     const result = await session.tool("screenshot", { ref, tab_id: tabId });
     return {
@@ -12,7 +12,7 @@ export async function captureScreenshot(session, { ref, tabId, fullPage = false,
       dialogs: result.dialogs ?? [],
     };
   }
-  const started = await session.tool("screenshot_full_page", { scope, tab_id: tabId, timeout_ms: timeoutMs });
+  const started = await session.tool("screenshot_full_page", { scope, tab_id: tabId, timeout_ms: timeoutMs, context_id: context, depends_on: dependsOn });
   const buffer = await readCapture(session, started.capture_id, started.byte_size);
   return {
     buffer,
