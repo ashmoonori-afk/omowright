@@ -32,6 +32,7 @@ const DEFAULT_REGISTRY_ROOT = path.join(
 const DEFAULT_PROBE_TIMEOUT_MS = 1_000;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 10_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+const BROWSER_CLOSE_TIMEOUT_MS = 2_000;
 // Waiting for the lock has to outlast the slowest honest critical section
 // (probe + launch + CDP attach); a shorter budget makes a second caller give up
 // at the exact moment the first one is about to publish its record.
@@ -241,6 +242,39 @@ function connectionOptions(options, profileDir) {
   return result;
 }
 
+// Asked over CDP first, as the pipe transport does: on Windows no signal can
+// ask a browser to quit, and Chrome cleans up only on a clean quit. Only a live
+// browser on a live socket is asked: CdpClient.send would otherwise reconnect
+// through the recorded port, which is not an identity (another process may
+// hold it by now). The connection is closed as soon as the request is answered,
+// before the quitting browser drops its socket: a drop on an open client starts
+// its auto-reconnect loop, which would keep the caller's process alive. Then,
+// like the pipe transport, the browser gets a bounded wait to exit before
+// terminateChild steps in.
+async function askBrowserToQuit(connection, child, disconnect) {
+  if (child.exitCode !== null || child.signalCode !== null || !connection.cdp.isConnected) {
+    await disconnect();
+    return false;
+  }
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  const quitRequested = await Promise.race([
+    connection.cdp
+      .send("Browser.close", undefined, undefined, { timeoutMs: BROWSER_CLOSE_TIMEOUT_MS })
+      .then(() => true, () => false),
+    exited.then(() => true),
+  ]);
+  await disconnect();
+  if (child.exitCode === null && child.signalCode === null) {
+    let timer;
+    await Promise.race([
+      exited,
+      new Promise((resolve) => { timer = setTimeout(resolve, BROWSER_CLOSE_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+  }
+  return quitRequested;
+}
+
 async function launchNamed(
   name,
   { root, recordPath, lockPath },
@@ -264,6 +298,13 @@ async function launchNamed(
       "--remote-debugging-port=0",
     ],
     {
+      // A named browser is shared through the registry, so it has to outlive
+      // the process that launched it. On Windows libuv puts every non-detached
+      // child in a kill-on-close job object, which kills the browser the
+      // moment its launcher exits (#90); detached keeps it out of that job
+      // (DETACHED_PROCESS also gives a console-subsystem browser no console).
+      // No windowsHide: it would start a headful browser's window hidden.
+      ...(process.platform === "win32" ? { detached: true } : {}),
       ...(options.spawnOptions ?? {}),
       stdio: ["ignore", "ignore", "pipe"],
     },
@@ -306,12 +347,14 @@ async function launchNamed(
     const disconnect = connection.close.bind(connection);
     connection.close = async () => {
       let failure;
-      try {
-        await disconnect();
-      } catch (error) {
-        failure = error;
-      }
-      await terminateChild(child);
+      const quitRequested = await askBrowserToQuit(connection, child, async () => {
+        try {
+          await disconnect();
+        } catch (error) {
+          failure = error;
+        }
+      });
+      await terminateChild(child, { quitRequested });
       // The browser this record points at is gone, so the record goes with it
       // instead of waiting for the next caller to clean it up.
       try {

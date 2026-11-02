@@ -193,3 +193,47 @@ test("a CdpClient without a URL refuses and dials nothing", { timeout: 15_000 },
   }
   assert.deepEqual({ outcomes, dialed }, { outcomes: ["refused", "refused", "refused"], dialed: [] });
 });
+
+// Contract owner: close() ends a CdpClient. A reconnect already in flight when
+// close() runs must neither install its socket nor keep retrying: a closed
+// client that reconnects holds its caller's process open and, through a port,
+// can reach whatever process holds that port by then (#101 review).
+test("a CdpClient closed while it is reconnecting stays closed", { timeout: 15_000 }, async () => {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ webSocketDebuggerUrl: `ws://127.0.0.1:${server.address().port}/devtools/browser/reconnect` }));
+  });
+  const sockets = new WebSocketServer({ noServer: true });
+  let held;
+  const reconnectArrived = new Promise((resolve) => {
+    let upgrades = 0;
+    server.on("upgrade", (req, socket, head) => {
+      upgrades += 1;
+      const accept = () => sockets.handleUpgrade(req, socket, head, (ws) => sockets.emit("connection", ws));
+      if (upgrades === 1) accept();
+      else { held = accept; resolve(); }
+    });
+  });
+  const first = once(sockets, "connection");
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const client = new CdpClient({ cdpUrl: `http://127.0.0.1:${server.address().port}` });
+  try {
+    await client.ensureConnected();
+    const [browserEnd] = await first;
+    browserEnd.terminate();
+    await reconnectArrived;
+    await client.close();
+    const late = once(sockets, "connection");
+    held();
+    const [lateEnd] = await late;
+    await once(lateEnd, "close");
+    assert.equal(client.isConnected, false);
+  } finally {
+    await client.close();
+    for (const ws of sockets.clients) ws.terminate();
+    sockets.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

@@ -7,6 +7,9 @@
 // after SIGTERM (a browser stuck mid-quit), FAKE_ON_TERM=exit quits cleanly.
 // FAKE_ON_EOF=ignore keeps running after its CDP pipe closes (a browser that
 // outlives its dead caller: the orphan a later launch must reap).
+// Like Chrome it quits after answering Browser.close (logged as "CLOSE <epoch
+// ms>"); FAKE_ON_CLOSE=ignore keeps it running, a browser that does not quit
+// when asked over CDP.
 import { appendFileSync, createReadStream, createWriteStream } from "node:fs";
 import { Socket } from "node:net";
 
@@ -46,6 +49,13 @@ if (mode === "mute-cdp") {
       if (raw.length === 0) continue;
       let msg;
       try { msg = JSON.parse(raw); } catch { continue; }
+      if (msg.method === "Browser.close") {
+        record("CLOSE");
+        output.write(JSON.stringify({ id: msg.id, result: {} }) + "\0", () => {
+          if (process.env.FAKE_ON_CLOSE !== "ignore") process.exit(0);
+        });
+        continue;
+      }
       const result = msg.method === "Browser.getVersion"
         ? { product: "FakeChrome/1.0", protocolVersion: "1.3" }
         : {};

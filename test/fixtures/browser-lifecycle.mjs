@@ -22,12 +22,14 @@ export function readEvents(logPath) {
   });
 }
 
-export function lifecycleClient(dir, onTerm, extraArgs = [], logName = "signals.log") {
+// `onClose` defaults to "ignore" so close() goes on to the signal path these
+// tests exercise; "exit" models a Chrome that quits on Browser.close.
+export function lifecycleClient(dir, onTerm, extraArgs = [], logName = "signals.log", onClose = "ignore") {
   const logPath = path.join(dir, logName);
   const client = new PipeCdpClient({
     browserPath: process.execPath,
     browserArgs: [fixture, ...extraArgs],
-    spawnOptions: { env: { ...process.env, FAKE_SIGNAL_LOG: logPath, FAKE_ON_TERM: onTerm } },
+    spawnOptions: { env: { ...process.env, FAKE_SIGNAL_LOG: logPath, FAKE_ON_TERM: onTerm, FAKE_ON_CLOSE: onClose } },
   });
   return { client, logPath };
 }
