@@ -27,7 +27,7 @@ for (const [platform, browsers] of Object.entries(EXPECTED)) {
 // Windows has no directory Chrome scans (the registry value points at the manifest), so the default is a per-user
 // directory under %LOCALAPPDATA%, one per browser.
 test("default native messaging host dir: per-user LocalAppData directory on win32", () => {
-  const localAppData = process.env.LOCALAPPDATA ?? path.win32.join(homedir(), "AppData", "Local");
+  const localAppData = process.env.LOCALAPPDATA || path.win32.join(homedir(), "AppData", "Local");
   for (const browser of ["chrome", "chromium"]) {
     assert.equal(defaultNativeMessagingHostDir(browser, "win32"), path.win32.join(localAppData, "omowright", "NativeMessagingHosts", browser));
   }

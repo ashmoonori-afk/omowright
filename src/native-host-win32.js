@@ -156,33 +156,38 @@ export async function installWin32NativeHost({ hostName, hostPath, dir, registry
   const firstMissing = dirItems.findIndex((item) => !item.exists && !item.inaccessible);
   dirItems.slice(0, firstMissing === -1 ? undefined : firstMissing).forEach((item, index) => reject("nativeMessagingHostDir security rejected", item, kindAt(dirChain, index)));
   if (firstMissing === 0) throw new Error(`nativeMessagingHostDir security rejected: ${dirChain[0]} is missing`);
-  if (firstMissing > 0) {
-    const created = dirChain.slice(firstMissing);
-    await mkdir(dirChain.at(-1), { recursive: true });
-    try {
+  const created = firstMissing > 0 ? dirChain.slice(firstMissing) : [];
+  const file = path.win32.join(dirChain.at(-1), `${hostName}.json`);
+  if (created.length) await mkdir(dirChain.at(-1), { recursive: true });
+  try {
+    if (created.length) {
       const again = await inspectWin32Paths(created);
       if (again.user !== user) throw new Error("native host security could not be verified: user changed");
       again.items.forEach((item, offset) => reject("nativeMessagingHostDir security rejected", item, kindAt(dirChain, firstMissing + offset)));
-    } catch (error) {
-      for (const made of created.reverse()) await rmdir(made).catch(() => {});
-      throw error;
     }
+    const hostKey = `${registryKey}\\${hostName}`;
+    // Chromium reads HKLM before HKCU, so a machine-level entry would win; refuse before writing anything.
+    const machineKey = `HKLM\\${hostKey.slice("HKCU\\".length)}`;
+    for (const view of ["32", "64"]) {
+      if (await registryDefault(machineKey, view) !== null) throw new Error(`${hostKey} is shadowed by a machine-level registration at ${machineKey} (/reg:${view})`);
+    }
+    const current = await registryDefault(hostKey);
+    if (current !== null && current.toLowerCase() !== file.toLowerCase() && !force) throw new Error(`${hostKey} already points at ${current}; use force`);
+    const manifest = await writeManifest(file);
+    const written = await inspectWin32Paths([file]);
+    const manifestRisk = win32PathRisk(written.items[0], "manifest", user);
+    // On a force reinstall the HKCU value may already name this path; it then points at a missing file, which Chrome
+    // treats as no host, and nobody untrusted can recreate the file in the verified directory.
+    if (manifestRisk) { await unlink(file).catch(() => {}); throw new Error(`native messaging manifest security rejected: ${file} ${manifestRisk}`); }
+    const added = await run(systemBinary("reg.exe"), ["add", hostKey, "/ve", "/t", "REG_SZ", "/d", file, "/f"]);
+    if (added.code !== 0) throw new Error(`native host registry write failed: ${String(added.stderr).trim()}`);
+    return { path: file, manifest, registryKey: hostKey };
+  } catch (error) {
+    // A directory this call created held nothing before it, so everything in it is ours to remove on failure.
+    if (created.length) {
+      await unlink(file).catch(() => {});
+      for (const made of [...created].reverse()) await rmdir(made).catch(() => {});
+    }
+    throw error;
   }
-  const file = path.win32.join(dirChain.at(-1), `${hostName}.json`);
-  const hostKey = `${registryKey}\\${hostName}`;
-  const current = await registryDefault(hostKey);
-  if (current !== null && current.toLowerCase() !== file.toLowerCase() && !force) throw new Error(`${hostKey} already points at ${current}; use force`);
-  const manifest = await writeManifest(file);
-  const written = await inspectWin32Paths([file]);
-  const manifestRisk = win32PathRisk(written.items[0], "manifest", user);
-  // On a force reinstall the HKCU value may already name this path; it then points at a missing file, which Chrome
-  // treats as no host, and nobody untrusted can recreate the file in the verified directory.
-  if (manifestRisk) { await unlink(file).catch(() => {}); throw new Error(`native messaging manifest security rejected: ${file} ${manifestRisk}`); }
-  const added = await run(systemBinary("reg.exe"), ["add", hostKey, "/ve", "/t", "REG_SZ", "/d", file, "/f"]);
-  if (added.code !== 0) throw new Error(`native host registry write failed: ${String(added.stderr).trim()}`);
-  const machineKey = `HKLM\\${hostKey.slice("HKCU\\".length)}`;
-  for (const view of ["32", "64"]) {
-    if (await registryDefault(machineKey, view) !== null) throw new Error(`${hostKey} is shadowed by a machine-level registration at ${machineKey} (/reg:${view})`);
-  }
-  return { path: file, manifest, registryKey: hostKey };
 }
