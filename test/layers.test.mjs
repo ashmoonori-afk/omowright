@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, existsSync, globSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { connectPipe, createAgentTabs } from "../src/index.js";
 import { describeLayers, layersHeader, snapshotWithLayers } from "../src/layers.js";
+import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
   const candidates = globSync(
@@ -61,7 +62,7 @@ async function launch() {
     connection,
     cleanup: async () => {
       await connection.close();
-      rmSync(ud, { recursive: true, force: true, maxRetries: 10 });
+      removeTreeSync(ud);
     },
   };
 }
