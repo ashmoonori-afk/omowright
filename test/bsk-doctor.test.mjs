@@ -132,12 +132,33 @@ test("bskOnboard runs install -> daemon -> register and returns the single human
     assert.equal(result.registrations[0].registered, true);
     assert.match(result.registrations[0].humanStep, /Enable/);
     assert.equal(result.humanStep, null, "once the browser connected there is nothing left for the human");
+    assert.equal(result.nextStep, null);
     assert.equal(result.browsersConnected.length, 1);
     assert.equal(result.ready, true);
     assert.ok(statusCalls >= 3, `waited through ${statusCalls} status polls`);
     const waits = daemon.requests.filter((r) => r.method === "system.status").map((r) => r.params?.wait_for_browser_ms);
     assert.ok(waits.slice(1).every((w) => w === 50), `later polls use the wait budget: ${waits}`);
   } finally { await daemon.close(); rmSync(home, { recursive: true, force: true }); }
+});
+
+test("bskOnboard with no daemon names the daemon and sends the user nothing, since it cannot see whether the extension is enabled", async () => {
+  const home = macHomeWithChrome();
+  const bskHome = mkdtempSync(path.join(tmpdir(), "omowright-onboard-nodaemon-"));
+  const steps = [];
+  try {
+    const client = new BskIpcClient({ home: bskHome, autoStart: false });
+    const result = await bskOnboard({
+      platform: "darwin", home, client, ...scoped(home), bskBin: "/fake/bsk", cliVersion: async () => "bsk 0.3.3",
+      onHumanStep: (step) => steps.push(step), waitForBrowserMs: 0, waitTotalMs: 0,
+    });
+    assert.equal(result.daemon.running, false);
+    assert.deepEqual(result.registrations, []);
+    assert.deepEqual(steps, []);
+    assert.equal(result.humanStep, null);
+    assert.equal(existsSync(path.join(home, "Library/Application Support/Google/Chrome/External Extensions")), false);
+    assert.match(result.nextStep, /daemon/i);
+    assert.equal(result.ready, false);
+  } finally { rmSync(home, { recursive: true, force: true }); rmSync(bskHome, { recursive: true, force: true }); }
 });
 
 test("bskOnboard never launches a headless browser when no browser is found; it returns the store instruction", async () => {
@@ -158,5 +179,6 @@ test("bskOnboard never launches a headless browser when no browser is found; it 
     assert.deepEqual(result.registrations, []);
     assert.match(result.humanStep, /Chrome|Edge|Chromium/);
     assert.match(result.humanStep, /chromewebstore\.google\.com/);
+    assert.equal(result.nextStep, result.humanStep, "with the daemon up, nextStep is the step the user still owes");
   } finally { await daemon.close(); rmSync(home, { recursive: true, force: true }); }
 });

@@ -106,6 +106,9 @@ if (!report.ready) {
   // result.needsChoice === true: nothing was registered; ask the user which
   //   browser they use (result.identification.candidates), then call again with
   //   { browser: "<id>" }.
+  // result.daemon.running === false: humanStep is null and nothing was
+  //   registered; result.nextStep says how to start the daemon. Start it and
+  //   call again before telling the user anything.
   // otherwise result.humanStep is the single thing to tell the user, e.g.
   // 'Quit Aside completely and open it again; a dialog offers to enable "BrowserSkill" — click Enable.'
 }

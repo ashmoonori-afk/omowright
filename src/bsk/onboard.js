@@ -103,7 +103,8 @@ export async function bskOnboard({
     } else if (identification.needsChoice) {
       needsChoice = true;
       humanStep = choiceStep(identification);
-    } else {
+    } else if (daemon.running) {
+      // A down daemon hides whether the extension is already enabled, so no step goes to the user until it is up.
       const registration = await registerExternalExtension({ platform, browser: primary });
       registrations.push({ browser: primary.id, ...registration });
       humanStep = registration.humanStep;
@@ -118,5 +119,6 @@ export async function bskOnboard({
   }
   daemon = { ...daemon, browsers: browsersConnected };
   const ready = browsersConnected.length > 0;
-  return { cli, install, daemon, browsers, primary: primary ?? null, identification, needsChoice, registrations, humanStep: ready ? null : humanStep, browsersConnected, ready };
+  const nextStep = ready ? null : humanStep ?? nextStepFor({ cli, daemon, browsers, browsersConnected, identification, primary });
+  return { cli, install, daemon, browsers, primary: primary ?? null, identification, needsChoice, registrations, humanStep: ready ? null : humanStep, nextStep, browsersConnected, ready };
 }
