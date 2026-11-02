@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  chmod,
   mkdir,
   open,
   readFile,
@@ -19,6 +18,7 @@ import {
   discoverLaunchedEndpoint,
   snapshotActivePort,
 } from "./launch-endpoint.js";
+import { restrictToOwner } from "./owner-only.js";
 import { acquireSharedConnection } from "./shared-connections.js";
 
 const RECORD_VERSION = 2;
@@ -66,7 +66,7 @@ function registryPaths(registryRoot, name) {
 
 async function ensureRegistryRoot(root) {
   await mkdir(root, { recursive: true, mode: 0o700 });
-  await chmod(root, 0o700);
+  await restrictToOwner(root, "directory");
 }
 
 function isRecord(value, expectedName) {
@@ -120,9 +120,9 @@ async function writeRecordAtomic(root, recordPath, record) {
     await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
     await handle.close();
     handle = null;
-    await chmod(tempPath, 0o600);
+    await restrictToOwner(tempPath, "file");
     await rename(tempPath, recordPath);
-    await chmod(recordPath, 0o600);
+    await restrictToOwner(recordPath, "file");
   } catch (error) {
     await handle?.close().catch(() => {});
     await unlink(tempPath).catch(() => {});
@@ -358,7 +358,7 @@ export async function connectNamed(name, options = {}) {
 async function attachOrLaunch(normalizedName, paths, options) {
   const loaded = await readRecord(paths.recordPath, normalizedName);
   if (loaded.record) {
-    await chmod(paths.recordPath, 0o600);
+    await restrictToOwner(paths.recordPath, "file");
     if (isPidAlive(loaded.record.pid)) {
       let version = null;
       try {
@@ -428,7 +428,7 @@ export async function listInstances(options = {}) {
         const recordPath = path.join(root, entry.name);
         const loaded = await readRecord(recordPath, expectedName);
         if (!loaded.record) return null;
-        await chmod(recordPath, 0o600);
+        await restrictToOwner(recordPath, "file");
         const alive = isPidAlive(loaded.record.pid);
         let responsive = false;
         if (alive) {

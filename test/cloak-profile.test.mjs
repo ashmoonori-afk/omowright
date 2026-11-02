@@ -8,19 +8,21 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as omowright from "../src/index.js";
+import { assertOwnerOnly } from "./fixtures/owner-only.mjs";
 
 const fakePipeBrowser = fileURLToPath(
   new URL("./fixtures/fake-pipe-browser.mjs", import.meta.url),
 );
 
-test("resolveCloakProfile creates and reuses a fixed fingerprint seed", async () => {
+// The owner-only check reads ACLs through PowerShell on Windows, which takes
+// seconds on a CI runner, hence the explicit budgets below.
+test("resolveCloakProfile creates and reuses a fixed fingerprint seed", { timeout: 60_000 }, async () => {
   const profileDir = mkdtempSync(path.join(tmpdir(), "omowright-cloak-profile-"));
 
   try {
@@ -44,8 +46,7 @@ test("resolveCloakProfile creates and reuses a fixed fingerprint seed", async ()
 
     const metadataPath = path.join(profileDir, ".omowright-cloak.json");
     assert.equal(JSON.parse(readFileSync(metadataPath, "utf8")).fingerprintSeed, 31415);
-    assert.equal(statSync(metadataPath).mode & 0o777, 0o600);
-    assert.equal(statSync(profileDir).mode & 0o777, 0o700);
+    await assertOwnerOnly([metadataPath, "file"], [profileDir, "directory"]);
   } finally {
     rmSync(profileDir, { recursive: true, force: true });
   }
@@ -88,7 +89,7 @@ test("buildCloakBrowserArgs rejects every identity override form", () => {
   }
 });
 
-test("resolveCloakProfile tightens existing metadata permissions", async () => {
+test("resolveCloakProfile tightens existing metadata permissions", { timeout: 60_000 }, async () => {
   const profileDir = mkdtempSync(path.join(tmpdir(), "omowright-cloak-profile-"));
   const metadataPath = path.join(profileDir, ".omowright-cloak.json");
 
@@ -98,7 +99,9 @@ test("resolveCloakProfile tightens existing metadata permissions", async () => {
 
     await omowright.resolveCloakProfile({ profileDir });
 
-    assert.equal(statSync(metadataPath).mode & 0o777, 0o600);
+    // On Windows the loose starting point is the ACL the file inherited from
+    // the temp dir, which grants more than the current user.
+    await assertOwnerOnly([metadataPath, "file"]);
   } finally {
     rmSync(profileDir, { recursive: true, force: true });
   }
