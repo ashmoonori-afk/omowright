@@ -4,7 +4,8 @@
 // current user alone: inherited entries (the parent's grants to other users or
 // groups) are dropped, and files created inside a directory inherit its grant.
 // Explicit entries already on the object are kept, as macOS keeps a file's
-// extended ACL through a chmod.
+// extended ACL through a chmod; on a fresh directory those are Windows' own
+// SYSTEM and Administrators entries, the root equivalents.
 // The Windows tools are spawned by absolute path: a bare name is resolved from
 // the process cwd before PATH, and a cwd another user can write would let them
 // substitute the tool. Any failure throws, so a caller never goes on with the

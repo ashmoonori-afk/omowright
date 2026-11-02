@@ -41,8 +41,9 @@ omowright-cloak \
 ```
 
 The profile directory is mode `0700`. On Windows, where mode bits do not
-restrict access, it gets a protected ACL that grants only the current user and
-that its files inherit; the metadata file gets the same. The metadata file is not a credential
+restrict access, it gets a protected ACL that grants only the current user (plus
+SYSTEM and Administrators, Windows' root equivalents, where Windows put them)
+and that its files inherit; the metadata file gets the same. The metadata file is not a credential
 store; it only pins the CloakBrowser fingerprint seed. Keep the profile on the
 machine that owns the session, and never commit it.
 

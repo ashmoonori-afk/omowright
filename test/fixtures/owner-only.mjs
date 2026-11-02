@@ -1,14 +1,22 @@
 // Asserts that paths are readable by their owner only, through whatever the
 // platform provides: mode bits on POSIX, and on Windows (where chmod only
-// toggles the read-only attribute) a protected DACL whose every entry allows the
-// current user. The ACL is read with Get-Acl, independently of the icacls call
-// that wrote it.
+// toggles the read-only attribute) a protected DACL that allows the current user
+// and nobody outside the trusted set. SYSTEM, Administrators and TrustedInstaller
+// are Windows' root equivalents (root reads a 0600 file too) and are the same
+// trusted set the native-host ACL check uses; a fresh directory can carry
+// explicit entries for them. The ACL is read with Get-Acl, independently of the
+// icacls call that wrote it.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const ROOT_EQUIVALENTS = new Set([
+  "S-1-5-18",
+  "S-1-5-32-544",
+  "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+]);
 
 const READ_ACLS = `
 $ErrorActionPreference = 'Stop'
@@ -43,11 +51,14 @@ export async function assertOwnerOnly(...entries) {
   const { user, acls } = JSON.parse(stdout);
   for (const acl of acls) {
     assert.equal(acl.protected, true, `${acl.path} still inherits its parent's ACL`);
-    assert.ok(acl.rules.length > 0, `${acl.path} has an empty ACL`);
+    assert.ok(
+      acl.rules.some((rule) => rule.sid === user && rule.type === "Allow"),
+      `${acl.path} does not grant the current user`,
+    );
     assert.deepEqual(
-      acl.rules.filter((rule) => rule.sid !== user || rule.type !== "Allow"),
+      acl.rules.filter((rule) => rule.type === "Allow" && rule.sid !== user && !ROOT_EQUIVALENTS.has(rule.sid)),
       [],
-      `${acl.path} grants someone other than the current user`,
+      `${acl.path} grants someone other than the current user and the system's root equivalents`,
     );
   }
 }
