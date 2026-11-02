@@ -24,9 +24,15 @@ writeFileSync(path.join(process.env.BSK_HOME, "started.txt"), args.join(" "));
 
 let dir;
 let bskBin;
+const registered = new Set();
 
 function powershell(command) {
   return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8" }).trim();
+}
+
+function unregister(tasks) {
+  if (tasks.length === 0) return;
+  powershell(`${tasks.map((task) => `Unregister-ScheduledTask -TaskName '${task}' -Confirm:$false -ErrorAction SilentlyContinue`).join("; ")}; exit 0`);
 }
 
 before(() => {
@@ -38,13 +44,19 @@ before(() => {
   execFileSync("bun", ["build", "--compile", path.join(dir, "fake-bsk.mjs"), "--outfile", bskBin], { stdio: "ignore" });
 });
 
-after(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+// A case that times out leaves its body running, and the runner can exit before that body's cleanup
+// does, so every task a case registered is also removed here.
+after(() => {
+  unregister([...registered]);
+  if (dir) rmSync(dir, { recursive: true, force: true });
+});
 
 for (const name of ["Tom&Jerry (x) ^ ;", "100% %PATH% home", "O'Brien", "O\u2019Brien", "\u2018quoted\u201B \u201A"]) {
   test(`a refused breakaway starts the daemon from a headless task for a home named ${name}`, windowsOnly, async () => {
     const home = path.join(dir, name);
     mkdirSync(home);
     const task = windowsDaemonTaskName(home);
+    registered.add(task);
     try {
       await startDaemonWithCli({ home, bskBin });
       const [execute, args] = powershell(`$a = (Get-ScheduledTask -TaskName '${task}').Actions[0]; $a.Execute + '|' + $a.Arguments`).split("|");
@@ -55,7 +67,8 @@ for (const name of ["Tom&Jerry (x) ^ ;", "100% %PATH% home", "O'Brien", "O\u2019
       while (!existsSync(marker) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 200));
       assert.equal(readFileSync(marker, "utf8"), "daemon start --foreground");
     } finally {
-      powershell(`Unregister-ScheduledTask -TaskName '${task}' -Confirm:$false -ErrorAction SilentlyContinue; exit 0`);
+      unregister([task]);
+      registered.delete(task);
     }
   });
 }
