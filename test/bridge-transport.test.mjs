@@ -20,7 +20,7 @@ function hostExecutable(dir, name = "host") { const file = path.join(dir, win32 
 function testRegistry() { if (!win32) return { options: {}, cleanup() {} }; const root = `HKCU\\Software\\omowright-test-${randomUUID()}`; return { options: { registryKey: `${root}\\NativeMessagingHosts` }, cleanup() { spawnSync("reg.exe", ["delete", root, "/f"], { windowsHide: true }); } }; }
 function registryDefault(key) { const out = spawnSync("reg.exe", ["query", key, "/ve"], { encoding: "utf8", windowsHide: true }); return /REG_SZ\s+(.+?)\s*$/m.exec(out.stdout ?? "")?.[1] ?? null; }
 function grantsSid(file, sid) { return spawnSync("icacls", [file, "/findsid", `*${sid}`], { encoding: "utf8", windowsHide: true }).stdout.includes("SID Found"); }
-function setEveryoneModify(dir, on) { const out = spawnSync("icacls", on ? [dir, "/grant", "*S-1-1-0:(OI)(CI)M"] : [dir, "/remove:g", "*S-1-1-0"], { encoding: "utf8", windowsHide: true }); assert.equal(out.status, 0, out.stdout + out.stderr); }
+function setEveryoneModify(dir, on, rights = "(OI)(CI)M") { const out = spawnSync("icacls", on ? [dir, "/grant", `*S-1-1-0:${rights}`] : [dir, "/remove:g", "*S-1-1-0"], { encoding: "utf8", windowsHide: true }); assert.equal(out.status, 0, out.stdout + out.stderr); }
 function streams() { return { input: new PassThrough(), output: new PassThrough(), error: new PassThrough() }; }
 function readOne(stream) { return new Promise((resolve, reject) => { const chunks = []; const onData = chunk => { chunks.push(chunk); const parsed = decodeFrames(Buffer.concat(chunks)); if (parsed.frames.length) { stream.off("data", onData); resolve(parsed.frames[0]); } }; stream.on("data", onData); stream.once("error", reject); }); }
 
@@ -147,8 +147,9 @@ test("registration rejects writable or symlinked directory components", registra
     const linked = path.join(root, "linked"); symlinkSync(parent, linked, win32 ? "junction" : undefined);
     await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linked, "hosts"), ...registry.options }), /security rejected/);
     if (win32) {
-      // Chrome starts the host in its own directory, so a directory others can add files to (DLLs, scripts) is refused
-      const shared = path.join(root, "shared-bin"); mkdirSync(shared); const planted = hostExecutable(shared); setEveryoneModify(shared, true);
+      // Chrome starts the host in its own directory, so a directory others can add files to (DLLs, scripts) is refused;
+      // the grant is AddFile/AddSubdirectory on the directory only, so the host file itself stays user-only
+      const shared = path.join(root, "shared-bin"); mkdirSync(shared); const planted = hostExecutable(shared); setEveryoneModify(shared, true, "(WD,AD)");
       await assert.rejects(() => installNativeMessagingHost({ hostPath: planted, extensionId, nativeMessagingHostDir: path.join(root, "hosts"), ...registry.options }), /hostPath directory security rejected/);
       setEveryoneModify(shared, false);
     }
