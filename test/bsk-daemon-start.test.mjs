@@ -15,11 +15,15 @@ const windowsOnly = { skip: process.platform !== "win32", timeout: 60_000 };
 const REFUSAL = "cannot start an independent Windows daemon; the host may prohibit Job Object breakaway";
 
 // A compiled stand-in for bsk: `status` refuses breakaway, `daemon start` records what the task gave it.
-const FAKE_BSK = `import { writeFileSync } from "node:fs";
+// The marker is written beside its final name and renamed into place, so a watcher that wakes on its
+// creation never reads it half-written.
+const FAKE_BSK = `import { renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 const args = process.argv.slice(2);
 if (args[0] === "status") { console.log(JSON.stringify({ message: ${JSON.stringify(REFUSAL)}, exit_code: 2 })); process.exit(2); }
-writeFileSync(path.join(process.env.BSK_HOME, "started.txt"), args.join(" "));
+const marker = path.join(process.env.BSK_HOME, "started.txt");
+writeFileSync(marker + ".tmp", args.join(" "));
+renameSync(marker + ".tmp", marker);
 `;
 
 let dir;
@@ -35,22 +39,19 @@ function unregister(tasks) {
   powershell(`${tasks.map((task) => `Unregister-ScheduledTask -TaskName '${task}' -Confirm:$false -ErrorAction SilentlyContinue`).join("; ")}; exit 0`);
 }
 
-async function waitForMarker(marker, deadline) {
+async function waitForMarker(marker, timeoutMs) {
   if (existsSync(marker)) return;
   const watcher = watch(path.dirname(marker));
+  let timer;
   try {
     await new Promise((resolve, reject) => {
-      let timer;
-      const check = () => {
-        clearTimeout(timer);
-        if (existsSync(marker) || Date.now() >= deadline) return resolve();
-        timer = setTimeout(check, Math.min(1000, deadline - Date.now()));
-      };
-      watcher.on("change", check);
-      watcher.on("error", (error) => { clearTimeout(timer); reject(error); });
-      check();
+      timer = setTimeout(() => reject(new Error(`the scheduled task wrote no marker at ${marker} within ${timeoutMs / 1000} s`)), timeoutMs);
+      watcher.on("change", () => { if (existsSync(marker)) resolve(); });
+      watcher.on("error", reject);
+      if (existsSync(marker)) resolve();
     });
   } finally {
+    clearTimeout(timer);
     watcher.close();
   }
 }
@@ -83,8 +84,7 @@ for (const name of ["Tom&Jerry (x) ^ ;", "100% %PATH% home", "O'Brien", "O\u2019
       assert.match(execute, /\\conhost\.exe$/i);
       assert.match(args, /^--headless powershell\.exe -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
       const marker = path.join(home, "started.txt");
-      const deadline = Date.now() + 15_000;
-      await waitForMarker(marker, deadline);
+      await waitForMarker(marker, 15_000);
       assert.equal(readFileSync(marker, "utf8"), "daemon start --foreground");
     } finally {
       unregister([task]);
