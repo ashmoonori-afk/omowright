@@ -112,6 +112,37 @@ test("pipe transport drives Chromium with zero listening TCP ports", { skip: !SH
   }
 });
 
+// Contract: a stale ref is re-found only when its role and name were unique in the snapshot and
+// are unique now. With two look-alike buttons re-rendered in a new order, the action must fail
+// instead of acting on the other row; a unique button that was re-rendered is still found.
+test("stale ref recovery refuses look-alike elements and keeps unique ones", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const html = `<!doctype html><title>rows</title><ul id="rows"><li>Alpha <button data-id="a">Delete</button></li><li>Beta <button data-id="b">Delete</button></li></ul><button id="save">Save</button><p id="log"></p>
+<script>
+document.addEventListener("click", (event) => { const id = event.target.dataset?.id ?? event.target.id; if (id) document.getElementById("log").textContent += id + ";"; });
+window.rerender = () => {
+  const rows = document.getElementById("rows");
+  rows.innerHTML = '<li>Beta <button data-id="b">Delete</button></li><li>Alpha <button data-id="a">Delete</button></li>';
+  document.getElementById("save").replaceWith(Object.assign(document.createElement("button"), { id: "save", textContent: "Save" }));
+};
+</script>`;
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-stale-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab(`data:text/html,${encodeURIComponent(html)}`);
+    const { refs } = await page.snapshot();
+    const refOf = (name, nth) => Object.entries(refs).filter(([, meta]) => meta.role === "button" && meta.name === name)[nth][0];
+    const alphaDelete = refOf("Delete", 0);
+    const save = refOf("Save", 0);
+    await page.evaluate("window.rerender()");
+    await assert.rejects(page.locator(alphaDelete).click({ timeout: 2000 }));
+    await page.locator(save).click({ timeout: 5000 });
+    assert.equal(await page.evaluate("document.getElementById('log').textContent"), "save;");
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+  }
+});
+
 test("JavaScript dialogs are auto-accepted and surfaced as events", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-dialog-test-"));
   const connection = await connectPipe({
