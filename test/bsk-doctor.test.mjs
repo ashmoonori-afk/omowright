@@ -27,6 +27,25 @@ test("cliInstallCommand uses the official installers with an explicit install di
   assert.equal(win.env.BSK_INSTALL_DIR, "C:\\x\\bin");
 });
 
+// Platform contract (omo#9855): Windows PowerShell 5.1 started from a PowerShell 7
+// shell inherits PS7's module dirs, which shadow Get-FileHash and kill the installer.
+test("installBskCli hands the Windows installer a PSModulePath without PowerShell 7 module dirs", async () => {
+  const key = Object.keys(process.env).find((name) => name.toUpperCase() === "PSMODULEPATH") ?? "PSModulePath";
+  const saved = process.env[key];
+  const windowsPowerShell = "C:\\Program Files\\WindowsPowerShell\\Modules;C:\\WINDOWS\\system32\\WindowsPowerShell\\v1.0\\Modules";
+  const seen = [];
+  const run = async (command, args, env) => { seen.push(Object.hasOwn(env, key) ? env[key] : "inherited"); return { code: 1, stdout: "", stderr: "" }; };
+  try {
+    process.env[key] = `D:\\Documents\\PowerShell\\Modules;C:\\Program Files\\PowerShell\\Modules;c:\\program files\\powershell\\7\\Modules;${windowsPowerShell}`;
+    await installBskCli({ platform: "win32", installDir: "C:\\x\\bin", run });
+    process.env[key] = "C:\\Program Files\\PowerShell\\7\\Modules";
+    await installBskCli({ platform: "win32", installDir: "C:\\x\\bin", run });
+  } finally {
+    if (saved === undefined) delete process.env[key]; else process.env[key] = saved;
+  }
+  assert.deepEqual(seen, [windowsPowerShell, undefined], "only PowerShell 7 entries are dropped; nothing left means no PSModulePath at all");
+});
+
 test("installBskCli restores shell rc files the installer appended to", async () => {
   const home = mkdtempSync(path.join(tmpdir(), "omowright-rc-"));
   const { writeFileSync, readFileSync } = await import("node:fs");
