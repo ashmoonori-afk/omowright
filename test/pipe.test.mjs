@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PipeCdpClient } from "../src/pipe.js";
+import { PipeCdpClient, connectPipe } from "../src/pipe.js";
 import { TERM_GRACE_MS, fixture, lifecycleClient, readEvents, scratchDir, spawnCaller, waitFor } from "./fixtures/browser-lifecycle.mjs";
 
 const harness = fileURLToPath(new URL("./fixtures/pipe-leak-harness.mjs", import.meta.url));
@@ -48,6 +49,27 @@ test("readiness failure surfaces the drained browser stdio tail", { timeout: 15_
     });
   } finally {
     await client.close();
+  }
+});
+
+// connectPipe() returns no handle when it rejects, so a browser left running
+// after a readiness failure can only be found in the process table (omo#9525).
+test("connectPipe quits the browser it spawned when the browser never becomes ready", { skip: process.platform === "win32" && "pgrep finds the browser by its argv marker", timeout: 20_000 }, async () => {
+  const marker = `--omowright-test-marker=${randomUUID()}`;
+  const running = () => {
+    try { execFileSync("pgrep", ["-f", "--", marker], { stdio: "ignore" }); return true; } catch { return false; }
+  };
+  try {
+    await assert.rejects(connectPipe({
+      browserPath: process.execPath,
+      browserArgs: [fixture, marker],
+      spawnOptions: { env: { ...process.env, FAKE_BROWSER_MODE: "mute-cdp" } },
+      readinessTimeoutMs: 1500,
+    }), /did not become ready over the CDP pipe/);
+    await waitFor(() => !running(), TERM_GRACE_MS + 2_000)
+      .catch(() => assert.fail("connectPipe rejected but left the browser it spawned running"));
+  } finally {
+    try { execFileSync("pkill", ["-KILL", "-f", "--", marker], { stdio: "ignore" }); } catch {}
   }
 });
 
