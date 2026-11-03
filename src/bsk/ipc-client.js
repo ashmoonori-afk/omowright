@@ -184,9 +184,10 @@ export class BskIpcClient {
           if (NO_LISTENER.has(error.code)) onNoListener(error.code);
           finish(reject, new BskRpcError("no_daemon", `IPC socket ${sockPath}: ${error.code ?? error.message}`));
         });
+        socket.setEncoding("utf8");
         socket.on("connect", () => socket.write(JSON.stringify(frame) + "\n"));
         socket.on("data", (chunk) => {
-          buffer += chunk.toString("utf8");
+          buffer += chunk;
           const idx = buffer.indexOf("\n");
           if (idx === -1) return;
           try { finish(resolve, decodeResponse(buffer.slice(0, idx), rpcId, method)); } catch (error) { finish(reject, error); }

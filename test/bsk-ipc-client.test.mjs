@@ -341,3 +341,15 @@ test("an explicit timeoutMs option never cuts a tool below its own timeout_ms", 
     assert.deepEqual(result, { ok: true });
   } finally { await daemon.close(); }
 });
+
+// Contract: a reply whose bytes arrive in two socket chunks, split inside a Korean character,
+// still decodes to the original text (page titles and labels reach the agent intact).
+test("a reply split inside a multi-byte character decodes intact", async () => {
+  const title = "로그인 페이지 - 계정 선택";
+  const daemon = await startFakeBskDaemon({ handlers: { "tool.observe": () => ({ result: { text: title } }) }, splitReplyAt: "계" });
+  try {
+    const client = new BskIpcClient({ home: daemon.home, autoStart: false });
+    const result = await client.call("tool.observe", {});
+    assert.equal(result.text, title);
+  } finally { await daemon.close(); }
+});
