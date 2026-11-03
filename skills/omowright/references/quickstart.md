@@ -22,6 +22,13 @@ const { connect, connectPipe } = await import("omowright");
   `connect()` takes either). Use for a real user browser (its
   profile, cookies, logins); pair with `createChromeApi` for bookmarks/history.
   Returns a `BrowserConnection` with `newTab(url)`.
+- `connectRunningBrowser({ browser })` — finds that port for you: it reads
+  `DevToolsActivePort` in each known browser profile, keeps the one whose port
+  answers (a TCP check, so no prompt), and connects to its exact WebSocket URL.
+  It never edits the profile. Two live browsers throw `choose_browser`; none
+  throws `not_found`, which means the user has not allowed remote debugging yet.
+  It works where an extension-based attach is blocked, for example a page that
+  holds another extension's iframe.
 
 **Every NEW connection to a user's own Chrome shows them an "Allow remote
 debugging?" prompt.** `connect()` calls in one process share one connection
