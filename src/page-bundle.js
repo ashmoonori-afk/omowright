@@ -749,7 +749,7 @@
 	}
 	function shouldIncludeNode(element, options) {
 		const role = getRole(element);
-		if (options.interactive) return role === "canvas" || isInteractive(element) || isScrollable(element) || isLandmark(element);
+		if (options.interactive) return role === "canvas" || role === "heading" || isInteractive(element) || isScrollable(element) || isLandmark(element);
 		if (isInteractive(element)) return true;
 		if (isScrollable(element)) return true;
 		if (isLandmark(element)) return true;
@@ -1066,6 +1066,9 @@
 					for (const child of getLightAndShadowChildNodes(element)) {
 						if (child.nodeType === Node.TEXT_NODE) {
 							if (!child.nodeValue || targetNode.role === "textbox") continue;
+							// Interactive reads keep a control's own visible label and heading text,
+							// but drop free-standing body prose under landmarks and generics.
+							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role)) continue;
 							targetNode.children.push(child.nodeValue);
 							continue;
 						}

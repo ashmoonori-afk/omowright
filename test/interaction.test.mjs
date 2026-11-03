@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, globSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
-import { connectPipe, createAgentTabs, createCua, createCaptcha } from "../src/index.js";
+import { connectPipe, compactSnapshot, createAgentTabs, createCua, createCaptcha } from "../src/index.js";
 import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
 function findHeadlessShell() {
@@ -195,5 +195,27 @@ test("clicking a target=_blank link opens the linked page in a new tab", { skip:
   } finally {
     await cleanup();
     site.close();
+  }
+});
+
+// Contract: an interactive snapshot lists controls with their own labels and keeps headings for
+// orientation, but leaves out free-standing body prose; the default snapshot still carries the prose.
+test("interactive snapshot keeps controls and headings and drops body prose", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const prose = "This paragraph is long body copy that an agent only needs when it reads the article.";
+  const html = `<!doctype html><title>lean</title><main><h1>Orders</h1><p>${prose}</p><button>Pay now</button><a href="#details">Details</a></main>`;
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-lean-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab(`data:text/html,${encodeURIComponent(html)}`);
+    const interactive = compactSnapshot(await page.snapshot({ interactive: true }));
+    assert.match(interactive, /button "Pay now"/);
+    assert.match(interactive, /link "Details"/);
+    assert.match(interactive, /heading "Orders"/);
+    assert.ok(!interactive.includes(prose), `interactive snapshot should not carry body prose:\n${interactive}`);
+    const full = compactSnapshot(await page.snapshot());
+    assert.ok(full.includes(prose), "the default snapshot still carries body prose");
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
   }
 });
