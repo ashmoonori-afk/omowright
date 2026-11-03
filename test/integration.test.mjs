@@ -142,3 +142,37 @@ test("JavaScript dialogs are auto-accepted and surfaced as events", { skip: !SHE
     removeTreeSync(ud);
   }
 });
+
+// Contract: goto resolves on a fully loaded page that is short or is a frameset. Before this,
+// the content probe kept such pages "sparse" and goto threw after its whole 30 s budget.
+test("goto resolves on a loaded sparse page and on a frameset page", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const pages = {
+    "/sparse": "<!doctype html><title>sparse</title><h1>Done</h1>",
+    "/frameset": "<!doctype html><title>frameset</title><frameset cols=\"50%,50%\"><frame src=\"/left\"><frame src=\"/right\"></frameset>",
+    "/left": "<!doctype html><body>LEFT</body>",
+    "/right": "<!doctype html><body>RIGHT</body>",
+  };
+  const server = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(pages[request.url] ?? "");
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-sparse-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab("about:blank");
+    for (const route of ["/sparse", "/frameset"]) {
+      const started = Date.now();
+      await page.goto(`${origin}${route}`);
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed < 8000, `${route} took ${elapsed} ms`);
+      assert.equal(await page.title(), route.slice(1));
+    }
+    assert.ok((await page.snapshot()).tree.length > 0);
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+    await new Promise(resolve => server.close(resolve));
+  }
+});
