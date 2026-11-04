@@ -46,8 +46,9 @@ once.
 
 **CREATE TABS ONLY THROUGH `createAgentTabs(connection)`. NEVER SEND
 `Target.createTarget` YOURSELF, NEVER CALL `Target.activateTarget`, NEVER BRING A
-TAB TO THE FRONT.** The manager always requests background creation so automation
-cannot steal focus, and it owns cleanup.
+TAB TO THE FRONT.** The manager opens each tab in its own background window, so
+automation cannot steal focus while the tab still renders, and it owns cleanup.
+Those windows show up in `chrome.windows` like any other.
 
 ```js
 const tab = await tabs.create("about:blank", {
