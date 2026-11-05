@@ -37,7 +37,17 @@ try {
   for (const state of ["interactive", "stable", "load", "domcontentloaded"]) {
     await page.waitForLoadState(state, { timeout: 5000 });
   }
-  await assert.rejects(page.waitForLoadState("interactive", { timeout: 1 }), /Timed out/);
+  // A missing body cannot pass the readiness probe, regardless of scheduling.
+  // Mutations or a blocked load alone can still resolve at the quiet-window cap.
+  await page.evaluate(() => document.body.remove());
+  await assert.rejects(page.waitForLoadState("interactive", { timeout: 100 }), /Timed out/);
+  // The readiness deadline includes 1000 ms of grace. Ignore in-flight CDP
+  // cleanup here; the final assertion covers those timers after teardown.
+  assert.deepEqual(
+    [...timers.values()].filter(({ ms }) => ms === 1100),
+    [],
+    "readiness deadline outlived the rejected wait",
+  );
   assert.equal(await page.waitForFunction(() => true), true);
   await assert.rejects(page.waitForFunction(() => false, undefined, { timeout: 20 }), /timed out/);
   await page.close();
