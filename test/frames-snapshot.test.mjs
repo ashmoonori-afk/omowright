@@ -14,6 +14,29 @@ import {
 
 const live = { skip: !SHELL && "no chromium binary found", timeout: 60_000 };
 
+test("navigation drops the previous document's iframe before resolving roles", live, async () => {
+  const fixtures = await startFixtureServers();
+  const { connection, cleanup } = await launch();
+  try {
+    const { page } = await createAgentTabs(connection).create("about:blank");
+    const url = fixtures.urlFor("oopif-parent.html").replace("localhost", "127.0.0.1");
+    await page.goto(url, { waitUntil: "load" });
+    await Promise.all(page.frames().map(frame => page.frameManager.ensureInjected(frame.frameId)));
+    assert.equal(await page.getByRole("button", { name: "Inside", exact: true }).count(), 1);
+    const previous = page.frames().find(frame => frame.url() === fixtures.childUrl);
+    assert.ok(previous);
+
+    await page.goto(`${url}?second`, { waitUntil: "load" });
+    await Promise.all(page.frames().map(frame => page.frameManager.ensureInjected(frame.frameId)));
+    assert.equal(await page.getByRole("button", { name: "Inside", exact: true }).count(), 1);
+    assert.equal(page.frames().length, 2);
+    assert.ok(!page.frames().some(frame => frame.frameId === previous.frameId));
+  } finally {
+    await cleanup();
+    await fixtures.close();
+  }
+});
+
 test("fresh navigation keeps the OOPIF child stitched and clickable", live, async () => {
   const fixtures = await startFixtureServers();
   const { connection, cleanup } = await launch();
