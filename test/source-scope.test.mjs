@@ -24,7 +24,7 @@ const globals = new Set(`
   ReadableStream WritableStream TransformStream
   window document location navigator Element HTMLElement HTMLInputElement
   HTMLTextAreaElement Node NodeFilter ShadowRoot MouseEvent WheelEvent
-  getComputedStyle innerWidth innerHeight scrollTo
+  getComputedStyle innerWidth innerHeight scrollTo MutationObserver
 `.trim().split(/\s+/));
 
 const freeNames = source => analyzeScopes(source).free.map(ref => ref.name).sort();
