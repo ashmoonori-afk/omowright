@@ -2,6 +2,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { windowsSystemTool } from "../owner-only.js";
 
 const INSTALL_SH = "https://raw.githubusercontent.com/Tencent/BrowserSkill/main/install.sh";
 const INSTALL_PS1 = "https://raw.githubusercontent.com/Tencent/BrowserSkill/main/install.ps1";
@@ -22,7 +23,7 @@ export function cliInstallCommand({ platform = process.platform, installDir, ver
   const env = { BSK_INSTALL_DIR: installDir };
   if (version) env.BSK_VERSION = version;
   if (platform === "win32") {
-    return { command: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm ${INSTALL_PS1} | iex`], env: windowsPowerShellEnv(env) };
+    return { command: windowsSystemTool("WindowsPowerShell\\v1.0\\powershell.exe"), args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `irm ${INSTALL_PS1} | iex`], env: windowsPowerShellEnv(env) };
   }
   return { command: "sh", args: ["-c", `curl -fsSL ${INSTALL_SH} | sh`], env };
 }

@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { windowsSystemTool } from "../owner-only.js";
 
 export function resolveBskHome(env = process.env) {
   const override = env.BSK_HOME;
@@ -53,7 +54,7 @@ export function windowsDaemonTaskName(home) {
 function windowsDaemonLaunch(home, bskBin) {
   const literal = (value) => `'${value.replace(/['\u2018\u2019\u201A\u201B]/g, (quote) => quote + quote)}'`;
   const script = `$env:BSK_HOME = ${literal(home)}; & ${literal(bskBin)} daemon start --foreground; exit $LASTEXITCODE`;
-  return `--headless powershell.exe -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
+  return `--headless "${windowsSystemTool("WindowsPowerShell\\v1.0\\powershell.exe")}" -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
 }
 
 function startDaemonInWindowsTask({ home, bskBin, timeoutMs }) {
@@ -63,7 +64,7 @@ function startDaemonInWindowsTask({ home, bskBin, timeoutMs }) {
     "Register-ScheduledTask -TaskName $env:BSK_TASK_NAME -Action $action -Settings $settings -Force | Out-Null",
     "Start-ScheduledTask -TaskName $env:BSK_TASK_NAME",
   ].join("; ");
-  return runToExit("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+  return runToExit(windowsSystemTool("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], {
     env: { ...process.env, BSK_TASK_NAME: windowsDaemonTaskName(home), BSK_TASK_ARGUMENT: windowsDaemonLaunch(home, bskBin) },
     timeoutMs,
     label: "registering the bsk daemon task",

@@ -32,11 +32,11 @@ export async function unlinkIfPresent(target) {
   });
 }
 
-async function isAbandoned(state, staleGraceMs) {
+async function isAbandoned(state, staleGraceMs, startTimeOf) {
   if (state.pid === null) return Date.now() - state.mtimeMs >= staleGraceMs;
   if (!isPidAlive(state.pid)) return true;
   if (state.start === null) return false;
-  const start = await processStartTime(state.pid);
+  const start = await startTimeOf(state.pid);
   return start !== null && start !== state.start;
 }
 
@@ -156,8 +156,21 @@ function waitForLockRelease(lockPath, timeoutMs) {
   });
 }
 
-async function acquireLock(lockPath, timeoutMs, staleGraceMs) {
+async function acquireLock(lockPath, timeoutMs, staleGraceMs, lookupStartTime) {
   const deadline = Date.now() + timeoutMs;
+  // A live holder's start time cannot change while we wait, and on Windows each
+  // lookup is a PowerShell call of about a second, so one acquire looks each
+  // holder pid up once. A holder that dies is still caught by isPidAlive; only
+  // a pid reused within one wait pass escapes it, and the wait then times out.
+  const startTimes = new Map();
+  const startTimeOf = async (pid) => {
+    if (!startTimes.has(pid)) {
+      const start = await lookupStartTime(pid);
+      if (start === null) return null;
+      startTimes.set(pid, start);
+    }
+    return startTimes.get(pid);
+  };
   let holderPid = null;
   for (;;) {
     const ours = await createLock(lockPath);
@@ -171,7 +184,7 @@ async function acquireLock(lockPath, timeoutMs, staleGraceMs) {
     const state = await readLockState(lockPath);
     if (state === null) continue;
     holderPid = state.pid ?? holderPid;
-    if (await isAbandoned(state, staleGraceMs)) {
+    if (await isAbandoned(state, staleGraceMs, startTimeOf)) {
       await reclaimLock(lockPath, state.ino, state.token, { deadline });
       // Jitter keeps two reclaimers from retrying in lockstep forever.
       await sleep(Math.random() * LOCK_RETRY_JITTER_MS);
@@ -201,10 +214,11 @@ async function acquireLocalLock(key) {
 
 // Runs `run` while this process and every other one agree we hold `lockPath`.
 // A lock with no readable identity counts as held until it is `staleGraceMs` old.
-export async function withLock(lockPath, { timeoutMs, staleGraceMs }, run) {
+// `startTimeOf` lets a test count start-time lookups; production callers pass none.
+export async function withLock(lockPath, { timeoutMs, staleGraceMs, startTimeOf = processStartTime }, run) {
   const releaseLocal = await acquireLocalLock(lockPath);
   try {
-    const release = await acquireLock(lockPath, timeoutMs, staleGraceMs);
+    const release = await acquireLock(lockPath, timeoutMs, staleGraceMs, startTimeOf);
     try {
       return await run();
     } finally {

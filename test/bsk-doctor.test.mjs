@@ -22,7 +22,8 @@ test("cliInstallCommand uses the official installers with an explicit install di
   assert.deepEqual(unix.args, ["-c", "curl -fsSL https://raw.githubusercontent.com/Tencent/BrowserSkill/main/install.sh | sh"]);
   assert.equal(unix.env.BSK_INSTALL_DIR, "/opt/x/bin");
   const win = cliInstallCommand({ platform: "win32", installDir: "C:\\x\\bin" });
-  assert.equal(win.command, "powershell");
+  // Windows PowerShell 5.1 by absolute path: a bare name resolves from the cwd before PATH.
+  assert.match(win.command, /^[A-Z]:\\.*\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i);
   assert.ok(win.args.join(" ").includes("install.ps1"));
   assert.equal(win.env.BSK_INSTALL_DIR, "C:\\x\\bin");
 });

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { link, open, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { restrictToOwner } from "./owner-only.js";
+import { restrictNewFileToOwner } from "./owner-only.js";
 
 const execFileAsync = promisify(execFile);
 const WINDOWS_START_TIME_TIMEOUT_MS = 15_000;
@@ -82,7 +82,7 @@ export async function createLock(lockPath) {
     const { ino } = await handle.stat();
     await handle.close();
     handle = null;
-    await restrictToOwner(tempPath, "file");
+    await restrictNewFileToOwner(tempPath);
     try {
       await link(tempPath, lockPath);
     } catch (error) {

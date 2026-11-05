@@ -10,6 +10,7 @@ import { installWin32NativeHost, isWin32RegistryKey, win32DirectoryChain, win32P
 import vm from "node:vm";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { windowsSystemTool } from "../src/owner-only.js";
 
 const extensionId = "a".repeat(32);
 const hello = { protocol: 1, type: "hello", role: "extension", connectionId: "c1", extensionId, extensionVersion: "0.1.0", events: ["tabs.activated"], commands: ["bookmarks.create"], maxMessageBytes: 1024 * 1024 };
@@ -18,10 +19,10 @@ const hello = { protocol: 1, type: "hello", role: "extension", connectionId: "c1
 const win32 = process.platform === "win32";
 const registrationTimeout = { timeout: 60_000 };
 function hostExecutable(dir, name = "host") { const file = path.join(dir, win32 ? `${name}.cmd` : name); writeFileSync(file, win32 ? "@echo off\r\n" : "#!/bin/sh\n", { mode: 0o755 }); return file; }
-function testRegistry() { if (!win32) return { options: {}, cleanup() {} }; const root = `HKCU\\Software\\omowright-test-${randomUUID()}`; return { options: { registryKey: `${root}\\NativeMessagingHosts` }, cleanup() { spawnSync("reg.exe", ["delete", root, "/f"], { windowsHide: true }); } }; }
-function registryDefault(key) { const out = spawnSync("reg.exe", ["query", key, "/ve"], { encoding: "utf8", windowsHide: true }); return /REG_SZ\s+(.+?)\s*$/m.exec(out.stdout ?? "")?.[1] ?? null; }
-function grantsSid(file, sid) { return spawnSync("icacls", [file, "/findsid", `*${sid}`], { encoding: "utf8", windowsHide: true }).stdout.includes("SID Found"); }
-function setEveryoneModify(dir, on, rights = "(OI)(CI)M") { const out = spawnSync("icacls", on ? [dir, "/grant", `*S-1-1-0:${rights}`] : [dir, "/remove:g", "*S-1-1-0"], { encoding: "utf8", windowsHide: true }); assert.equal(out.status, 0, out.stdout + out.stderr); }
+function testRegistry() { if (!win32) return { options: {}, cleanup() {} }; const root = `HKCU\\Software\\omowright-test-${randomUUID()}`; return { options: { registryKey: `${root}\\NativeMessagingHosts` }, cleanup() { spawnSync(windowsSystemTool("reg.exe"), ["delete", root, "/f"], { windowsHide: true }); } }; }
+function registryDefault(key) { const out = spawnSync(windowsSystemTool("reg.exe"), ["query", key, "/ve"], { encoding: "utf8", windowsHide: true }); return /REG_SZ\s+(.+?)\s*$/m.exec(out.stdout ?? "")?.[1] ?? null; }
+function grantsSid(file, sid) { return spawnSync(windowsSystemTool("icacls.exe"), [file, "/findsid", `*${sid}`], { encoding: "utf8", windowsHide: true }).stdout.includes("SID Found"); }
+function setEveryoneModify(dir, on, rights = "(OI)(CI)M") { const out = spawnSync(windowsSystemTool("icacls.exe"), on ? [dir, "/grant", `*S-1-1-0:${rights}`] : [dir, "/remove:g", "*S-1-1-0"], { encoding: "utf8", windowsHide: true }); assert.equal(out.status, 0, out.stdout + out.stderr); }
 function streams() { return { input: new PassThrough(), output: new PassThrough(), error: new PassThrough() }; }
 function readOne(stream) { return new Promise((resolve, reject) => { const chunks = []; const onData = chunk => { chunks.push(chunk); const parsed = decodeFrames(Buffer.concat(chunks)); if (parsed.frames.length) { stream.off("data", onData); resolve(parsed.frames[0]); } }; stream.on("data", onData); stream.once("error", reject); }); }
 

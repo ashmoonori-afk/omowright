@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeF
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startDaemonWithCli, windowsDaemonTaskName } from "../src/bsk/daemon-info.js";
+import { windowsSystemTool } from "../src/owner-only.js";
 
 // Platform contract: when bsk cannot detach its daemon from the caller's Job Object, the start
 // must still succeed through a scheduled task that opens no console window, whatever the home path holds.
@@ -31,7 +32,7 @@ let bskBin;
 const registered = new Set();
 
 function powershell(command) {
-  return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8" }).trim();
+  return execFileSync(windowsSystemTool("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8" }).trim();
 }
 
 function unregister(tasks) {
@@ -82,7 +83,7 @@ for (const name of ["Tom&Jerry (x) ^ ;", "100% %PATH% home", "O'Brien", "O\u2019
       await startDaemonWithCli({ home, bskBin });
       const [execute, args] = powershell(`$a = (Get-ScheduledTask -TaskName '${task}').Actions[0]; $a.Execute + '|' + $a.Arguments`).split("|");
       assert.match(execute, /\\conhost\.exe$/i);
-      assert.match(args, /^--headless powershell\.exe -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
+      assert.match(args, /^--headless "[A-Z]:\\[^"]*\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
       const marker = path.join(home, "started.txt");
       await waitForMarker(marker, 15_000);
       assert.equal(readFileSync(marker, "utf8"), "daemon start --foreground");
