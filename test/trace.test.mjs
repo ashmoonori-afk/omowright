@@ -106,7 +106,7 @@ test("a trace run writes jsonl, har, screenshots and a summary", async () => {
     assert.equal(trace.dir, dir);
     await flush();
 
-    page.emit("dialog", { type: "confirm", message: "sure?", defaultPrompt: "", url: "https://x.test/app" });
+    page.emit("dialog", { type: () => "confirm", message: () => "sure?", defaultValue: () => "", url: "https://x.test/app" });
     cdp.emit("Page.frameNavigated", { frame: { id: "F1", url: "https://x.test/app" } });
     cdp.emit("Page.frameNavigated", { frame: { id: "F2", parentId: "F1", url: "https://x.test/iframe" } });
     cdp.emit("Page.frameNavigated", { frame: { id: "F3", url: "https://other.test/" } }, { sessionId: "other" });

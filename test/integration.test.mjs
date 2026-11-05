@@ -161,9 +161,9 @@ test("JavaScript dialogs are auto-accepted and surfaced as events", { skip: !SHE
     assert.equal(await page.evaluate("prompt('name?', 'dflt')"), "", "prompt() auto-accepts to empty string");
 
     assert.equal(events.length, 3, "every dialog surfaces as an event");
-    assert.deepEqual(events.map(d => d.type), ["alert", "confirm", "prompt"]);
-    assert.equal(events[0].message, "hello");
-    assert.equal(events[2].defaultPrompt, "dflt");
+    assert.deepEqual(events.map(d => d.type()), ["alert", "confirm", "prompt"]);
+    assert.equal(events[0].message(), "hello");
+    assert.equal(events[2].defaultValue(), "dflt");
 
     const t0 = Date.now();
     await page.goto("data:text/html,<script>alert('during load')</script><main><h1>Substantial text content for the readiness probe</h1><a href='https://example.com'>link</a></main>");
