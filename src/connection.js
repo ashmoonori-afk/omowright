@@ -8,6 +8,7 @@ import {
 } from "./core.js";
 import { acquireSharedConnection, canShareConnection } from "./shared-connections.js";
 import { createAgentTabs, getAgentTabs } from "./agent-tabs.js";
+import { repinViewport } from "./viewport.js";
 
 export class TabRepository {
   #client;
@@ -123,6 +124,11 @@ export class BrowserConnection {
       extensionBridgeRoute: {},
       page: null,
       resolvePageSession: (id, preferred) => this.#sessions.resolvePageSession(id, preferred),
+      setViewportSize: async size => {
+        const tabs = getAgentTabs(this);
+        if (tabs?.get(targetId)) await tabs.repin(targetId, size);
+        else await repinViewport(entry.page, size);
+      },
       resolvePath: value => path.resolve(this.#storageRoot, value),
       ensurePath: async value => {
         const resolved = path.resolve(this.#storageRoot, value);
