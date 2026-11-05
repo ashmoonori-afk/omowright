@@ -104,26 +104,66 @@ test("bskSnapshot surfaces an in-page failure as an error instead of a partial r
   await assert.rejects(bskSnapshot(failing), /document is not defined/);
 });
 
-test("interactive snapshots keep clickable generic tiles whose parent is only a pointer container", { skip: !SHELL && "no chromium binary found", timeout: 60_000 }, async () => {
+// The ref that carries a label: the label's own line if it has a ref, else the nearest
+// shallower line above it that has one (a text: child belongs to its parent's ref).
+function ownerRef(tree, label) {
+  const lines = tree.split("\n");
+  const at = lines.findIndex((line) => line.includes(label));
+  assert.ok(at >= 0, `tree has a line for ${label}:\n${tree}`);
+  const indent = (line) => line.match(/^ */)[0].length;
+  let depth = indent(lines[at]) + 1;
+  for (let i = at; i >= 0; i -= 1) {
+    if (indent(lines[i]) >= depth) continue;
+    const match = lines[i].match(/ref=(e\d+)/);
+    if (match) return match[1];
+    depth = indent(lines[i]);
+  }
+  assert.fail(`no ref carries ${label}:\n${tree}`);
+}
+
+// Ids of the fixture elements whose refs resolve inside each container.
+async function refsInside(mainWorldEvaluate, snap, ids) {
+  const reply = await mainWorldEvaluate(`(() => {
+    const css = ${JSON.stringify(Object.values(snap.css).filter(Boolean))};
+    const ids = ${JSON.stringify(ids)};
+    return Object.fromEntries(ids.map((id) => [id, css.filter((path) => document.querySelector(path)?.closest("#" + id)).length]));
+  })()`);
+  return reply.value;
+}
+
+test("interactive snapshots keep the label of a clickable element whatever its children are", { skip: !SHELL && "no chromium binary found", timeout: 60_000 }, async () => {
   await withPage(async ({ mainWorldEvaluate }) => {
     const fakeSession = { evaluate: (expression, opts) => mainWorldEvaluate(expression, opts) };
     const snap = await bskSnapshot(fakeSession, { interactive: true });
-    assert.match(snap.tree, /Card tile/, "a cursor:pointer div inside a pointer container is kept");
-    assert.match(snap.tree, /Icon tile/, "a cursor:pointer span nested twice is kept");
-    assert.match(snap.tree, /Focusable tile/, "a tabindex tile is kept");
-    assert.match(snap.tree, /SVG tile/, "a cursor:pointer tile whose child is an svg keeps its label");
-    const refLines = snap.tree.split("\n").filter((line) => /ref=e\d+/.test(line));
-    assert.ok(refLines.some((line) => line.includes("Card tile")), `the tile keeps a ref: ${refLines.join(" | ")}`);
-    assert.ok(refLines.some((line) => line.includes("Focusable tile")), "the focusable tile keeps a ref");
-    const refOf = (label) => {
-      const line = snap.tree.split("\n").find((candidate) => candidate.includes(label));
-      assert.ok(line, `tree has a line for ${label}`);
-      const match = line.match(/ref=(e\d+)/);
-      assert.ok(match, `${label} line carries a ref: ${line}`);
-      return match[1];
+    const owners = {
+      "Nested pointer card": "#nested-pointer-card",
+      "Invoice 42 Due Friday": "#invoice-card",
+      "Open menu": "#open-menu",
+      "Span tile": "#span-tile",
+      "Settings": "#settings-tile",
     };
-    assert.match(snap.css[refOf("Card tile")] ?? "", /#card-tile/, "the Card tile ref has its own css path (a click needs it)");
-    const svgRefLine = snap.tree.split("\n").find((line) => line.includes("SVG tile"));
-    assert.ok(svgRefLine, "the svg-child tile keeps its label");
+    for (const [label, css] of Object.entries(owners)) {
+      assert.match(snap.css[ownerRef(snap.tree, label)] ?? "", new RegExp(`${css}$`), `${label} is carried by the ref of ${css}:\n${snap.tree}`);
+    }
+    for (const label of ["Card tile", "Icon tile", "SVG tile"]) {
+      assert.match(snap.css[ownerRef(snap.tree, label)] ?? "", /#pointer-generics$/, `${label} is clicked through its pointer container:\n${snap.tree}`);
+    }
+    const longLine = snap.tree.split("\n").find((line) => line.includes("Long card start"));
+    assert.ok(longLine, `a long clickable card keeps the start of its label:\n${snap.tree}`);
+    assert.match(snap.css[ownerRef(snap.tree, "Long card start")] ?? "", /#long-card$/);
+    assert.ok(!snap.tree.includes("LONG_CARD_TAIL"), `a long label is capped, not copied whole:\n${longLine}`);
+    assert.ok(!snap.tree.includes("This page watches itself"), "free-standing body prose stays out of the interactive read");
+  });
+});
+
+test("a pointer container keeps one ref however deep its children nest", { skip: !SHELL && "no chromium binary found", timeout: 60_000 }, async () => {
+  await withPage(async ({ mainWorldEvaluate }) => {
+    const fakeSession = { evaluate: (expression, opts) => mainWorldEvaluate(expression, opts) };
+    for (const interactive of [false, true]) {
+      const snap = await bskSnapshot(fakeSession, { interactive });
+      const counts = await refsInside(mainWorldEvaluate, snap, ["pointer-section", "js-card", "link-card", "nested-pointer-card", "span-tile", "pointer-generics"]);
+      assert.deepEqual(counts, { "pointer-section": 1, "js-card": 1, "link-card": 1, "nested-pointer-card": 1, "span-tile": 1, "pointer-generics": 2 }, `interactive=${interactive}:\n${snap.tree}`);
+      assert.match(snap.tree, /"Pro plan new\$20\/mo"/, "inline price text is not split by per-span refs");
+    }
   });
 });

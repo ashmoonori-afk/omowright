@@ -22,6 +22,17 @@
       <div id="outlined-tile" tabindex="0" style="cursor: pointer">Focusable tile</div>
       <div id="svg-tile" style="cursor: pointer"><svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"></circle></svg>SVG tile</div>
     </section>
+    <div id="nested-labels">
+      <div id="nested-pointer-card" style="cursor: pointer"><div><div>Nested pointer card</div></div></div>
+      <div id="invoice-card" tabindex="0"><div class="t">Invoice 42</div><p>Due Friday</p></div>
+      <div id="open-menu" onclick="void 0"><div>Open</div><div>menu</div></div>
+      <span id="span-tile" style="cursor: pointer"><span>Span tile</span></span>
+      <div id="settings-tile" onclick="void 0"><svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"></circle></svg><div>Settings</div></div>
+      <div id="long-card" tabindex="0"><p>Long card start: this clickable card wraps a whole paragraph of body copy, the kind of card that links a full article teaser LONG_CARD_TAIL</p><button type="button">Read</button></div>
+      <section id="pointer-section" style="cursor: pointer"><div><div><div>Deep pointer section</div></div></div></section>
+      <div id="js-card" style="cursor: pointer"><div>Pro plan</div><div><span>new</span><span>$20</span><span>/mo</span></div></div>
+      <a id="link-card" href="#link-card"><div><span>Link card</span></div></a>
+    </div>
     <div id="host"></div>
   </main>
   <script>
@@ -36,6 +47,7 @@
         window.__fixtureMutationLog.push(r.type + ":" + r.target.nodeName + ":" + (r.attributeName || ""));
       });
     }).observe(document.documentElement, { attributes: true, childList: true, subtree: true, characterData: true });
+    document.getElementById("js-card").addEventListener("click", function () {});
     window.__fixtureClicks = [];
     document.addEventListener("click", function (event) { window.__fixtureClicks.push(event.target.textContent.trim()); }, true);
   </script>
