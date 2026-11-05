@@ -1,5 +1,5 @@
 // Public locator API (#144): getByPlaceholder / getByTestId / getByTitle / getByAltText on page, frame, frame locator
-// and chained on a locator, with Playwright's matching rules. A string matches as a case-insensitive substring,
+// and chained on a locator, and getByLabel (#172) on page, frame and frame locator, with Playwright's matching rules. A string matches as a case-insensitive substring,
 // `exact: true` as a case-sensitive whole value, a RegExp against the raw attribute value; getByTestId is always exact
 // for strings and reads `data-testid` unless `selectors.setTestIdAttribute()` names another attribute. Like getByText
 // (#129), the getters see elements inside open shadow roots, nested ones included, and never inside closed roots.
@@ -35,6 +35,10 @@ const markup = (prefix) => `
 <div id="${prefix}qa" data-qa="row">qa row</div>
 <span id="${prefix}issues-count" title="Issues count">3</span>
 <img id="${prefix}logo-full" alt="Playwright logo" width="10" height="10">
+<label for="${prefix}email">E-mail address</label><input id="${prefix}email">
+<label>Email<input id="${prefix}email-short"></label>
+<label for="${prefix}phone">Phone</label><input id="${prefix}phone">
+<label for="${prefix}go-next">Go >> next</label><input id="${prefix}go-next">
 <form id="${prefix}form">
   <textarea id="${prefix}search-users" placeholder="search users"></textarea>
   <div id="${prefix}row-2" data-testid="row-2">row two</div>
@@ -75,6 +79,13 @@ const CASES = [
   ["getByAltText", "logo", { exact: true }, ["logo"]],
   ["getByAltText", /^Playwright/, {}, ["logo-full"]],
   ["getByAltText", /^Shadow avatar/, {}, ["shadow-avatar"]],
+  // getByLabel (#172) resolves to the labelled control. A RegExp tests the label text, flags included.
+  ["getByLabel", /e-?mail/i, {}, ["email", "email-short"]],
+  ["getByLabel", /^Phone$/, {}, ["phone"]],
+  ["getByLabel", /mail/g, {}, ["email", "email-short"]],
+  ["getByLabel", /^Go >> next$/, {}, ["go-next"]],
+  ["getByLabel", "mail", {}, ["email", "email-short"]],
+  ["getByLabel", "Email", { exact: true }, ["email-short"]],
 ];
 
 // [getter, argument, expected ids] chained from `locator("#form")`: only the match inside the form remains.
@@ -106,7 +117,7 @@ async function idsOf(locator) {
   return fromNth;
 }
 
-test("getByPlaceholder/TestId/Title/AltText match like Playwright on page, frame, frame locator and locator", { skip: !SHELL && "no chromium binary found", timeout: 120000 }, async () => {
+test("getByPlaceholder/TestId/Title/AltText/Label match like Playwright on page, frame, frame locator and locator", { skip: !SHELL && "no chromium binary found", timeout: 120000 }, async () => {
   const { connection, cleanup } = await launch();
   try {
     const page = (await createAgentTabs(connection).create("about:blank")).page;
