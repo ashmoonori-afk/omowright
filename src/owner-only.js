@@ -79,32 +79,65 @@ async function readDirectoryDacl(dir, run) {
   }
 }
 
+// The flags and ACE fields of an SDDL DACL (`D:` flags, then parenthesized
+// ACEs, up to the SACL `S:` that may follow), or null when it does not parse,
+// as for `D:NO_ACCESS_CONTROL`. A conditional ACE nests parentheses and may
+// quote strings, so ACEs are split at depth zero, skipping quoted text.
+function parseDacl(dacl) {
+  const head = /^D:([A-Z]*)/.exec(dacl);
+  if (!head) return null;
+  const aces = [];
+  let depth = 0;
+  let start = 0;
+  let i = head[0].length;
+  for (; i < dacl.length; i++) {
+    const c = dacl[i];
+    if (c === '"' && depth > 0) {
+      i = dacl.indexOf('"', i + 1);
+      if (i === -1) return null;
+    } else if (c === "(") {
+      if (depth++ === 0) start = i + 1;
+    } else if (c === ")") {
+      if (depth === 0) return null;
+      if (--depth === 0) aces.push(dacl.slice(start, i).split(";"));
+    } else if (depth === 0) {
+      break;
+    }
+  }
+  if (depth !== 0 || (i < dacl.length && !dacl.startsWith("S:", i))) return null;
+  return { flags: head[1], aces };
+}
+
 // Reads a directory DACL against the grant below. `ownerOnly`: already what
 // the grant leaves, protected, with the user's one entry being the inheritable
 // full-control allow and no allow entry for a trustee outside the trusted set.
 // `foreign`: the trustees outside it with explicit allow entries, which the
 // grant removes (it drops inherited entries itself). Deny entries grant nothing
-// and stay. SDDL names the built-in Administrator and Guest accounts LA and LG.
-function inspectDirectoryDacl(dacl, sid) {
-  const match = /^D:([A-Z]*)((?:\([^()]*\))*)/.exec(dacl);
-  if (!match) return { ownerOnly: false, foreign: [] };
+// and stay. `parsed` is false for a DACL that could not be read, whose entries
+// are unknown. SDDL names the built-in Administrator and Guest accounts LA and LG.
+function inspectDirectoryDacl(text, sid) {
+  const dacl = parseDacl(text);
+  if (!dacl) return { parsed: false, ownerOnly: false, foreign: [] };
   const isUser = (trustee) =>
     trustee === sid || (trustee === "LA" && sid.endsWith("-500")) || (trustee === "LG" && sid.endsWith("-501"));
-  const aces = [...match[2].matchAll(/\(([^()]*)\)/g)].map(([, ace]) => ace.split(";"));
-  const own = aces.filter((fields) => isUser(fields[5]));
-  const others = aces.filter(([type, , , , , trustee]) => !isUser(trustee) && !TRUSTED_TRUSTEES.has(trustee) && !DENY_ACE_TYPES.has(type));
+  const own = dacl.aces.filter((fields) => isUser(fields[5]));
+  const others = dacl.aces.filter(([type, , , , , trustee]) => !isUser(trustee) && !TRUSTED_TRUSTEES.has(trustee) && !DENY_ACE_TYPES.has(type));
   return {
-    ownerOnly: match[1].includes("P") && others.length === 0 &&
+    parsed: true,
+    ownerOnly: dacl.flags.includes("P") && others.length === 0 &&
       own.length === 1 && own[0][0] === "A" && own[0][1] === "OICI" && own[0][2] === "FA",
     foreign: [...new Set(others.filter(([, flags]) => !flags.includes("ID")).map(([, , , , , trustee]) => trustee))],
   };
 }
 
-// The memo key: volume and file id. A file system that reports no file id gives
-// none, and its directories are not remembered.
+// The memo key: volume, file id and creation time. The 64-bit id Node reports
+// can name a later directory too (ReFS ids are 128-bit, and a file system may
+// reuse a deleted directory's id); the creation time tells them apart. A file
+// system that reports no file id gives none, and its directories are not
+// remembered.
 async function directoryIdentity(dir) {
-  const { dev, ino } = await stat(dir, { bigint: true });
-  return ino === 0n ? null : `${dev}:${ino}`;
+  const { dev, ino, birthtimeNs } = await stat(dir, { bigint: true });
+  return ino === 0n ? null : `${dev}:${ino}:${birthtimeNs}`;
 }
 
 // The memo only spares later tool runs, so a directory whose identity cannot
@@ -145,7 +178,8 @@ export async function restrictToOwner(target, kind, { platform = process.platfor
       windowsHide: true,
     });
   }
-  await rememberOwnerOnlyDirectory(target);
+  // Entries of a DACL that could not be read may still grant someone else.
+  if (dacl.parsed) await rememberOwnerOnlyDirectory(target);
 }
 
 // For a file the caller has just created. On Windows a file created inside a

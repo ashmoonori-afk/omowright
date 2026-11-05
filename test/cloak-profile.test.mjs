@@ -456,6 +456,15 @@ test("restrictToOwner on win32 leaves an already owner-only directory alone", as
       ["C:\\d"],
       [["C:\\d", "/remove:g", "*WD", "*BU", "*S-1-5-21-9-9-9-1002", "/Q"]],
     ],
+    // A conditional ACE nests parentheses and may quote them; an entry after it still counts.
+    [
+      "protected, a conditional entry before a grant to Everyone",
+      `D:PAI(A;OICI;FA;;;${SID})(XA;OICI;FA;;;SY;(@User.title == ")" || Member_of {SID(BA)}))(A;OICI;FA;;;WD)`,
+      ["C:\\d"],
+      [["C:\\d", "/remove:g", "*WD", "/Q"]],
+    ],
+    // An integrity label or audit entries follow the DACL on the same line.
+    ["protected, user granted, with a SACL", `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;${SID})S:AI(ML;OICI;NW;;;LW)`, [], []],
     ["no ACL on the volume", "D:NO_ACCESS_CONTROL", ["C:\\d"], []],
   ];
   for (const [label, sddl, expected, removals, sid = SID] of cases) {
