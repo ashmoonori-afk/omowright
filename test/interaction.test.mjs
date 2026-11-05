@@ -66,6 +66,65 @@ async function boundsOf(page, selector) {
   })()`);
 }
 
+test("locator filters and chained getters preserve parent scope", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async (t) => {
+  const { connection, cleanup } = await launch();
+  try {
+    const page = (await createAgentTabs(connection).create("about:blank")).page;
+    await page.goto(`data:text/html,${encodeURIComponent(`<!doctype html>
+      <button>Choose</button><span>Shared text</span><label>Account<input id="outside"></label>
+      <article id="alpha"><h2>Alpha</h2><b>Ready</b></article>
+      <article id="beta"><h2>Beta</h2><i>Waiting</i></article>
+      <article id="hidden" style="display:none"><h2>Hidden</h2></article>
+      <section id="parent"><button id="choose">Choose</button><span id="shared">Shared text</span>
+        <label>Account<input id="inside"></label></section>`)}`);
+    const cards = page.locator("article");
+    const ids = (locator) => locator.evaluateAll(nodes => nodes.map(node => node.id));
+    for (const [name, options, expected] of [
+      ["hasText", { hasText: "ALPHA" }, ["alpha"]],
+      ["hasText regex", { hasText: /^BetaWaiting$/ }, ["beta"]],
+      ["has", { has: page.locator("b") }, ["alpha"]],
+      ["hasNot", { hasNot: page.locator("b") }, ["beta", "hidden"]],
+      ["hasNotText", { hasNotText: "ALPHA" }, ["beta", "hidden"]],
+      ["hasNotText regex", { hasNotText: /Beta/ }, ["alpha", "hidden"]],
+      ["visible true", { visible: true }, ["alpha", "beta"]],
+      ["visible false", { visible: false }, ["hidden"]],
+    ]) {
+      await t.test(name, async () => {
+        const filtered = cards.filter(options);
+        assert.deepEqual(await ids(filtered), expected);
+        assert.equal(await filtered.count(), expected.length);
+        assert.equal(await filtered.first().getAttribute("id"), expected[0]);
+      });
+    }
+    await t.test("unknown filter option throws", () => {
+      assert.throws(() => cards.filter({ typo: true }), /Unknown.*filter.*typo/i);
+    });
+    for (const [method, args, expected] of [
+      ["getByRole", ["button", { name: "Choose", exact: true }], "choose"],
+      ["getByText", ["Shared text", { exact: true }], "shared"],
+      ["getByLabel", ["Account", { exact: true }], "inside"],
+    ]) {
+      await t.test(method, async () => {
+        const child = page.locator("#parent")[method](...args);
+        assert.equal(await child.count(), 1);
+        assert.equal(await child.getAttribute("id"), expected);
+      });
+    }
+    await t.test("composed filters and relative inner locators", async () => {
+      const inner = page.locator("h2").filter({ hasText: "Alpha" });
+      const filtered = cards.filter({ has: inner, hasNotText: /Waiting/, visible: true });
+      assert.deepEqual(await ids(filtered), ["alpha"]);
+      assert.deepEqual(await ids(cards.filter({ has: page.locator("h2").first() })), ["alpha", "beta", "hidden"]);
+      assert.deepEqual(await ids(cards.filter({ has: page.locator("body").locator("b") })), []);
+      assert.equal(await filtered.getByText("Ready").textContent(), "Ready");
+      assert.equal(await cards.filter({ visible: true }).last().getAttribute("id"), "beta");
+      assert.deepEqual(await ids(cards.filter({ hasText: "a" }).filter({ hasNotText: "Alpha" })), ["beta"]);
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
 async function waitForState(page, expression, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
