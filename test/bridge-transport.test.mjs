@@ -260,7 +260,7 @@ test("request with an already-aborted signal rejects instead of hanging", async 
 });
 
 // Security contract: the Windows ACL policy that decides whether a native-messaging host may be registered. The real
-// registration (PowerShell + reg.exe) is exercised on Windows by test/bridge-transport.test.mjs; this table pins the
+// registration (PowerShell + reg.exe) is exercised on Windows by the registration tests above; this table pins the
 // policy on every OS so a loosened rights mask or trusted-SID set fails anywhere.
 const USER = "S-1-5-21-1-2-3-1001";
 const EVERYONE = "S-1-1-0";
