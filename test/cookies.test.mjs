@@ -46,12 +46,13 @@ test("sanitizeCookies normalizes raw cookie exports for CDP", () => {
 
 test("injectCookies sets cookies reachable on navigation", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-cookies-test-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     await injectCookies(page, [
       { name: "omw_test", value: "works", domain: "example.com", expires: Math.floor(Date.now() / 1000) + 3600 },
@@ -62,7 +63,7 @@ test("injectCookies sets cookies reachable on navigation", { skip: !SHELL && "no
     assert.ok(cookieHeader.includes("omw_test=works"), `injected cookie visible: ${cookieHeader}`);
     assert.ok(cookieHeader.includes("__Host-pinned=yes"), `host-pinned cookie visible: ${cookieHeader}`);
   } finally {
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
   }
 });

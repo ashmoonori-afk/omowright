@@ -31,8 +31,10 @@ async function waitForFreshChildDocument(page) {
 
 test("attaching to a tab whose OOPIF already exists snapshots the child", live, async () => {
   const fixtures = await startFixtureServers();
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     const targetId = await createRawTab(connection, fixtures.urlFor("oopif-parent.html"));
     await waitForChildTarget(connection);
     const page = await connection.attachPage(targetId);
@@ -61,15 +63,17 @@ test("attaching to a tab whose OOPIF already exists snapshots the child", live, 
     const reloaded = await snapshotWithFrames(page);
     assert.ok(reloaded.tree.includes(`button "Inside" [ref=f1e1]`), reloaded.tree);
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     await fixtures.close();
   }
 });
 
 test("a frame lost from FrameManager is re-adopted by reconcileFrames", live, async () => {
   const fixtures = await startFixtureServers();
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     const targetId = await createRawTab(connection, fixtures.urlFor("oopif-parent.html"));
     await waitForChildTarget(connection);
     const page = await connection.attachPage(targetId);
@@ -91,15 +95,17 @@ test("a frame lost from FrameManager is re-adopted by reconcileFrames", live, as
     assert.equal(recovered.missingFrames, undefined);
     assert.equal(await clickUntilChildObserves(page, "f1e1", childFrameId, "data-clicked"), "1");
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     await fixtures.close();
   }
 });
 
 test("Turnstile shape: OOPIF inside a closed shadow root is appended as an orphan block", live, async () => {
   const fixtures = await startFixtureServers();
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     const targetId = await createRawTab(connection, fixtures.urlFor("oopif-turnstile.html"));
     await waitForChildTarget(connection);
     const page = await connection.attachPage(targetId);
@@ -114,15 +120,17 @@ test("Turnstile shape: OOPIF inside a closed shadow root is appended as an orpha
     const child = childFrameOf(page);
     assert.equal(await clickUntilChildObserves(page, "f1e1", child.frameId, "data-clicked"), "1");
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     await fixtures.close();
   }
 });
 
 test("an OOPIF that belongs to another tab is never adopted", live, async () => {
   const fixtures = await startFixtureServers();
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     await createRawTab(connection, fixtures.urlFor("oopif-parent.html"));
     const foreign = await waitForChildTarget(connection, { label: "foreign child iframe target" });
 
@@ -151,7 +159,7 @@ test("an OOPIF that belongs to another tab is never adopted", live, async () => 
     const snapshot = await snapshotWithFrames(page);
     assert.ok(snapshot.tree.includes(`button "Inside" [ref=f1e1]`), snapshot.tree);
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     await fixtures.close();
   }
 });

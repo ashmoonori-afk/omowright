@@ -439,3 +439,105 @@ test("page waits and events observe local HTTP traffic with readable bodies", {
   }
 });
 
+// Chromium protocol contract: the renderer reports a cross-document commit before the browser activates the document,
+// and browser-side page commands fail with "Not attached to an active page" until then. Chromium holds renderer-bound
+// commands until the navigation finishes, so a history step settles on a frame-tree reply requested after the commit.
+test("history steps settle on a frame-tree reply requested after the cross-document commit", async () => {
+  const cdp = new FakeCdp();
+  const history = { currentIndex: 1, entries: [{ id: 1, url: "https://x.test/a" }, { id: 2, url: "https://x.test/b" }] };
+  const frameTree = Promise.withResolvers();
+  const original = cdp.send.bind(cdp);
+  cdp.send = async (...args) => {
+    const result = await original(...args);
+    if (args[0] === "Page.getNavigationHistory") return history;
+    return args[0] === "Page.getFrameTree" ? frameTree.promise : result;
+  };
+  const frameTreeRequests = () => cdp.calls.filter(call => call.method === "Page.getFrameTree").length;
+  const page = new OmOPage(cdp, {
+    mainFrameId: "f1", getFrame: () => null, frames: new Map(), hasSession: () => true,
+  }, "t1", "s1", { resolvePageSession: async () => "s1" });
+  try {
+    let settled = false;
+    const back = page.goBack().then(response => {
+      settled = true;
+      return response;
+    });
+    await flush();
+    cdp.emit("Network.requestWillBeSent", {
+      requestId: "l1", loaderId: "l1", frameId: "f1", type: "Document",
+      request: { url: "https://x.test/a", method: "GET", headers: {} },
+    });
+    cdp.emit("Network.responseReceived", { requestId: "l1", type: "Document", response: { status: 200, headers: {} } });
+    await flush();
+    assert.equal(frameTreeRequests(), 0, "a request before the commit would be answered before the navigation");
+    cdp.emit("Page.frameNavigated", { frame: { id: "f1", loaderId: "l1", url: "https://x.test/a" }, type: "Navigation" });
+    await flush();
+    assert.equal(settled, false, "the renderer's commit alone does not settle the step");
+    assert.equal(frameTreeRequests(), 1);
+    frameTree.resolve({ frameTree: { frame: { id: "f1" } } });
+    assert.equal((await back).status(), 200);
+  } finally {
+    await page.dispose();
+  }
+});
+
+// Public API contract (Playwright parity): navigations resolve with the main frame's final document response,
+// or null when the navigation stays in the same document or there is no history entry.
+test("navigation methods resolve with the main-frame document response", {
+  skip: !process.env.SHELL_BIN && "set SHELL_BIN to a Chromium headless shell", timeout: 60_000,
+}, async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/moved") {
+      response.writeHead(302, { location: "/" });
+      response.end();
+      return;
+    }
+    const status = request.url === "/missing" ? 404 : 200;
+    response.writeHead(status, { "content-type": "text/html", "x-fixture": request.url });
+    response.end(`<!doctype html><title>${status}</title><main>Navigation fixture ${request.url}</main>`);
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const dir = mkdtempSync(path.join(tmpdir(), "omowright-navigation-"));
+  let browser;
+  try {
+    browser = await connectPipe({
+      browserPath: process.env.SHELL_BIN,
+      browserArgs: ["--headless", `--user-data-dir=${dir}`], storageRoot: dir,
+    });
+    const page = await browser.newTab("about:blank");
+    const ok = await page.goto(origin + "/", { waitUntil: "load" });
+    assert.equal(ok.status(), 200);
+    assert.equal(ok.ok(), true);
+    assert.equal(ok.url(), origin + "/");
+    assert.equal(ok.headers()["x-fixture"], "/");
+    assert.equal(await ok.text(), "<!doctype html><title>200</title><main>Navigation fixture /</main>");
+
+    const missing = await page.goto(origin + "/missing", { waitUntil: "load" });
+    assert.equal(missing.status(), 404);
+    assert.equal(missing.ok(), false);
+    assert.equal(await page.goto(origin + "/missing#details", { waitUntil: "domcontentloaded" }), null);
+
+    assert.equal(await page.goBack(), null, "back within the document");
+    const back = await page.goBack();
+    assert.equal(back.url(), origin + "/");
+    assert.equal(back.status(), 200);
+    assert.equal((await page.goForward()).status(), 404);
+    assert.equal(await page.goForward(), null, "forward within the document");
+    assert.equal(await page.goForward(), null, "no forward entry");
+    const reloaded = await page.reload();
+    assert.equal(reloaded.status(), 404);
+    assert.equal(reloaded.headers()["x-fixture"], "/missing");
+
+    // Last step: a commit-mode goto returns before the document is active, and its body is read after the call.
+    const redirected = await page.goto(origin + "/moved", { waitUntil: "commit" });
+    assert.equal(redirected.url(), origin + "/");
+    assert.equal(redirected.status(), 200);
+    assert.equal(await redirected.text(), "<!doctype html><title>200</title><main>Navigation fixture /</main>");
+  } finally {
+    await browser?.close();
+    await new Promise(resolve => server.close(resolve));
+    removeTreeSync(dir);
+  }
+});
+

@@ -55,17 +55,18 @@ async function withPage(run, { commandTimeoutMs } = {}) {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-wff-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-    commandTimeoutMs,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+      commandTimeoutMs,
+    });
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     await run(page, origin);
   } finally {
-    await connection.close();
+    await connection?.close();
     await new Promise(resolve => server.close(resolve));
     removeTreeSync(ud);
   }

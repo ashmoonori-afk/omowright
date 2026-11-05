@@ -34,15 +34,20 @@ input.on("data", chunk => {
       case "Fixture.malformed":
         output.write("{not-json}\0");
         break;
+      // Page.reload is held like Fixture.hold: Chromium answers a reload sent to a
+      // crashed session once the target is back.
       case "Fixture.hold":
-        held.set(sessionId, id);
-        write({ method: "Fixture.held", params: { sessionId } });
+      case "Page.reload":
+        held.set(`${sessionId}:${method}`, id);
+        write({ method: "Fixture.held", params: { sessionId, method } });
         break;
-      case "Fixture.release":
-        write({ id: held.get(params.sessionId), result: { released: true } });
-        held.delete(params.sessionId);
+      case "Fixture.release": {
+        const key = `${params.sessionId}:${params.method ?? "Fixture.hold"}`;
+        write({ id: held.get(key), result: { released: true } });
+        held.delete(key);
         write({ id, result: {} });
         break;
+      }
       case "Fixture.end":
         output.end();
         break;
@@ -50,6 +55,10 @@ input.on("data", chunk => {
         // A process that outlives this one and keeps the parent's read pipe open,
         // like a browser helper that inherited the CDP fd.
         const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], {
+          // libuv assigns non-detached Windows children to a kill-on-parent-exit
+          // job. Escape it so this helper really outlives the browser (#193).
+          // https://github.com/libuv/libuv/blob/v1.51.0/src/win/process.c
+          detached: process.platform === "win32",
           stdio: ["ignore", "ignore", "ignore", "ignore", 4],
         });
         write({ id, result: { pid: holder.pid } });
@@ -57,6 +66,11 @@ input.on("data", chunk => {
       }
       case "Fixture.detach":
         write({ method: "Target.detachedFromTarget", params: { sessionId: params.sessionId } });
+        write({ id, result: {} });
+        break;
+      case "Fixture.attachMalformed":
+        write({ method: "Target.attachedToTarget" });
+        write({ method: "Target.attachedToTarget", params: { sessionId: "session-malformed" } });
         write({ id, result: {} });
         break;
       case "Fixture.crash":

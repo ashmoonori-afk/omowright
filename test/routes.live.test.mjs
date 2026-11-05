@@ -71,12 +71,13 @@ function startFixtureServer() {
 test("live abort of png fires img onerror", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-routes-png-"));
   const { server, url } = await startFixtureServer();
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     const routes = createRoutes(page);
     await routes.route("*.png", route => route.abort());
@@ -94,7 +95,7 @@ test("live abort of png fires img onerror", { skip: !SHELL && "no chromium binar
     assert.equal(imgState.load, false, "aborted image does not load");
     await routes.dispose();
   } finally {
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
     await new Promise(resolve => server.close(resolve));
   }
@@ -103,12 +104,13 @@ test("live abort of png fires img onerror", { skip: !SHELL && "no chromium binar
 test("live fulfill mocks /api/x json even when the server returns 404", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-routes-api-"));
   const { server, url } = await startFixtureServer();
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     const routes = createRoutes(page);
     await routes.route("*/api/x", route => route.fulfill({
@@ -120,7 +122,7 @@ test("live fulfill mocks /api/x json even when the server returns 404", { skip: 
     assert.deepEqual(payload, { mocked: true });
     await routes.dispose();
   } finally {
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
     await new Promise(resolve => server.close(resolve));
   }
@@ -132,12 +134,13 @@ test("live fulfill mocks /api/x json even when the server returns 404", { skip: 
 test("page routes mock, override, fall back and unregister through one interceptor", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-page-routes-"));
   const { server, url } = await startFixtureServer();
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     await page.goto(url);
     const fetchText = pathname => page.evaluate(`fetch(${JSON.stringify(pathname)}).then(r => r.text())`);
@@ -187,7 +190,7 @@ test("page routes mock, override, fall back and unregister through one intercept
     assert.equal(await fetchText("/once"), "not found");
     assert.equal(legacy.enabled, false);
   } finally {
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
     await new Promise(resolve => server.close(resolve));
   }

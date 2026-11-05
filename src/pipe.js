@@ -83,6 +83,14 @@ export class PipeCdpClient {
       ...this.#spawnOptions,
       stdio,
     });
+    // A spawn that fails (missing or non-executable browserPath) has no pid and
+    // emits "error" instead of "spawn"; unheard, that error crashes the caller.
+    const spawnFailed = new Promise(resolve => this.#child.once("error", resolve));
+    if (this.#child.pid === undefined) {
+      const error = await spawnFailed;
+      this.#child = undefined;
+      throw error;
+    }
     const browserPid = this.#child.pid;
     // A helper process can keep an old launch's pipe open after that browser is
     // gone; its late events must never touch the launch that replaced it.
@@ -105,7 +113,11 @@ export class PipeCdpClient {
       stream.setEncoding("utf8");
       stream.on("data", (chunk) => {
         this.#stdioTail = (this.#stdioTail + chunk).slice(-STDIO_TAIL_LIMIT);
-        if (stream === stderr) this.#stderrHead = (this.#stderrHead + chunk).slice(0, STDIO_TAIL_LIMIT);
+        // Only the first stderr line is read: stop growing the head once it holds
+        // a complete non-blank line or is full.
+        if (stream === stderr && this.#stderrHead.length < STDIO_TAIL_LIMIT && !this.#stderrHead.trimStart().includes("\n")) {
+          this.#stderrHead = (this.#stderrHead + chunk).slice(0, STDIO_TAIL_LIMIT);
+        }
       });
       stream.on("error", () => {});
     }
@@ -196,11 +208,15 @@ export class PipeCdpClient {
     }
     const how = child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`;
     const firstLine = this.#stderrHead.split("\n").map(line => line.trim()).find(Boolean);
-    const tail = this.#stdioTail.trim();
+    // The first line already follows the colon; drop its repeat from the tail.
+    const tailLines = this.#stdioTail.trim().split("\n");
+    const repeat = tailLines.findIndex(line => line.trim() === firstLine);
+    if (repeat !== -1) tailLines.splice(repeat, 1);
+    const tail = tailLines.join("\n").trim();
     return Error(
       `Browser exited before it became ready over the CDP pipe (${how})` +
       (firstLine ? `: ${firstLine}` : "") +
-      (tail && tail !== firstLine ? `\nBrowser stdio tail:\n${tail}` : ""),
+      (tail ? `\nBrowser stdio tail:\n${tail}` : ""),
     );
   }
 
@@ -327,14 +343,17 @@ export class PipeCdpClient {
       return;
     }
     if (typeof msg.method === "string") {
-      if (msg.method === "Target.attachedToTarget") {
+      if (msg.method === "Target.attachedToTarget" && msg.params?.sessionId && msg.params.targetInfo?.targetId) {
         this.#sessionTargets.set(msg.params.sessionId, msg.params.targetInfo.targetId);
       } else if (msg.method === "Target.detachedFromTarget" && msg.params?.sessionId) {
         this.#failCommands(CdpSessionDetachedError, "CDP session detached", msg.params.sessionId);
         this.#sessionTargets.delete(msg.params.sessionId);
       } else if (msg.method === "Inspector.targetCrashed" && msg.sessionId) {
-        this.#failCommands(CdpSessionCrashedError, "CDP session crashed", msg.sessionId);
-        this.#sessionTargets.delete(msg.sessionId);
+        // The session outlives a renderer crash and Page.reload brings the target
+        // back: Chromium answers a pending reload, so leave it and keep the
+        // session's target. Commands the dead renderer held are answered only by a
+        // later reload, with "Target crashed"; reject those now.
+        this.#failCommands(CdpSessionCrashedError, "CDP session crashed", msg.sessionId, "Page.reload");
       }
       const meta = { sessionId: msg.sessionId };
       if (msg.method === "Page.javascriptDialogOpening" && msg.sessionId) {
@@ -363,9 +382,10 @@ export class PipeCdpClient {
     return new ErrorType(`${reason}: ${entry.method} (${context})`, details);
   }
 
-  #failCommands(ErrorType, reason, sessionId) {
+  #failCommands(ErrorType, reason, sessionId, sparedMethod) {
     for (const [id, entry] of this.#pending) {
       if (sessionId !== undefined && entry.sessionId !== sessionId) continue;
+      if (entry.method === sparedMethod) continue;
       if (entry.timeout) clearTimeout(entry.timeout);
       this.#pending.delete(id);
       entry.reject(this.#commandError(ErrorType, reason, entry));
