@@ -439,6 +439,41 @@ test("connectNamed rejects an alive holder whose endpoint hangs", async () => {
   }
 });
 
+// Public API contract: a browserPath that does not exist is a launch failure,
+// reported promptly under both runtimes (bun leaves a never-spawned child's
+// exitCode null and emits no "exit", which once hung the launch cleanup).
+test("connectNamed rejects a missing browserPath promptly and leaves nothing behind", { timeout: 10_000 }, async () => {
+  const registryRoot = await mkdtemp(
+    path.join(tmpdir(), "omowright-instances-"),
+  );
+  const browserPath = path.join(registryRoot, "no-such-browser");
+  const boundMs = 3_000;
+  let timer;
+  try {
+    const outcome = await Promise.race([
+      connectNamed("missing", { registryRoot, browserPath }).then(
+        (connection) => ({ connection }),
+        (error) => ({ error }),
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ unsettled: true }), boundMs);
+      }),
+    ]);
+    assert.ok(!outcome.unsettled, `connectNamed did not settle within ${boundMs}ms`);
+    await outcome.connection?.close();
+    assert.ok(outcome.error, "connectNamed resolved for a missing browser");
+    assert.equal(outcome.error.code, "ENOENT");
+    assert.ok(
+      outcome.error.message.includes(browserPath),
+      `error does not name the path: ${outcome.error.message}`,
+    );
+    assert.deepEqual(await readdir(registryRoot), []);
+  } finally {
+    clearTimeout(timer);
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
 test("connectNamed recovers from a malformed record", async () => {
   const registryRoot = await mkdtemp(
     path.join(tmpdir(), "omowright-instances-"),

@@ -670,7 +670,9 @@ test("page events refuse unknown names and list the supported ones", { skip: !SH
     for (const name of PAGE_EVENT_NAMES) page.on(name, () => {})();
     const unknown = error => error instanceof TypeError
       && PAGE_EVENT_NAMES.every(name => error.message.includes(name));
-    assert.throws(() => page.on("pageerorr", () => {}), error => unknown(error) && error.message.includes("pageerorr"));
+    for (const name of ["pageerorr", "popupError"]) {
+      assert.throws(() => page.on(name, () => {}), error => unknown(error) && error.message.includes(name));
+    }
     assert.throws(() => page.off("worker", () => {}), unknown);
     await assert.rejects(page.waitForEvent("requestfailed", { timeout: 1000 }), unknown);
   });
