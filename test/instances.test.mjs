@@ -23,6 +23,10 @@ import { test } from "node:test";
 import { WebSocketServer } from "ws";
 import { connectNamed, listInstances } from "../src/instances.js";
 import { readEvents } from "./fixtures/browser-lifecycle.mjs";
+import { EventEmitter } from "node:events";
+import { closeSync, openSync, writeSync } from "node:fs";
+import { PassThrough } from "node:stream";
+import { discoverLaunchedEndpoint, snapshotActivePort } from "../src/launch-endpoint.js";
 import { reclaimLock, withLock } from "../src/instance-lock.js";
 import { assertOwnerOnly } from "./fixtures/owner-only.mjs";
 
@@ -878,6 +882,56 @@ test("connectNamed ignores a DevToolsActivePort left before the launch", async (
     await connection?.close().catch(() => {});
     await decoy.close();
     await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+// Contract owner: launch endpoint identity (#107). An identity change does not
+// prove a pre-launch DevToolsActivePort was rewritten: Linux updates mtime
+// before it copies a write's data, and a touch or an in-place rewrite moves it
+// too. Stale bytes name another browser, and the launch check would compare
+// that browser's answer with the id read from the same stale bytes, so
+// discovery must judge the bytes, not only the identity.
+function spawnedChildStub() {
+  const child = new EventEmitter();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  return child;
+}
+
+test("launch discovery never accepts a pre-launch DevToolsActivePort whose bytes are unchanged", async () => {
+  const profileDir = await mkdtemp(path.join(tmpdir(), "omowright-activeport-"));
+  const portFile = path.join(profileDir, "DevToolsActivePort");
+  try {
+    await writeFile(portFile, "61234\n/devtools/browser/stale");
+    const past = new Date(Date.now() - 60_000);
+    await utimes(portFile, past, past);
+    const previousActivePort = await snapshotActivePort(profileDir);
+    // The identity moves, the bytes stay the stale browser's.
+    await utimes(portFile, new Date(), new Date());
+
+    await assert.rejects(
+      discoverLaunchedEndpoint(spawnedChildStub(), { profileDir, timeoutMs: 500, previousActivePort }),
+      /did not expose a DevTools endpoint within 500ms/,
+    );
+
+    // The launched browser's own write is still accepted. Written the way
+    // Chromium writes it (truncated at open): bun's writeFile rewrites an
+    // existing file in place, which discovery could read torn (old prefix,
+    // new tail), a shape no Chromium write produces.
+    const discovered = discoverLaunchedEndpoint(spawnedChildStub(), { profileDir, timeoutMs: 10_000, previousActivePort });
+    const fd = openSync(portFile, "w");
+    try {
+      writeSync(fd, "54321\n/devtools/browser/launched");
+    } finally {
+      closeSync(fd);
+    }
+    assert.deepEqual(await discovered, {
+      endpoint: "http://127.0.0.1:54321",
+      browserPath: "/devtools/browser/launched",
+    });
+  } finally {
+    await rm(profileDir, { recursive: true, force: true });
   }
 });
 
