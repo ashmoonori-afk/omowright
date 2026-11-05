@@ -15,7 +15,14 @@ running Chromium DevTools endpoint).
 - `newTab(url)` — open a tab, waits for interactivity, returns page.
 - `listTargets()` — list open tabs (id, type, url, title).
 - `attachPage(targetId)` — attach an existing tab.
-- `page.goto(url)` — navigate; resolves when interactive.
+- `page.goto(url)` — navigate; resolves when interactive with the main-frame
+  document response (the final hop after redirects), or `null` for a
+  same-document navigation such as a `#hash` change. `page.reload()`,
+  `page.goBack()` and `page.goForward()` resolve the same way once the new
+  document is active (they do not wait for `load`), and `null` when there is
+  no history entry (also `null` when the transport emits no network events).
+  The response is the object described under `page.on("request" | "response")`;
+  its body stays readable after the call.
 - `page.waitForURL(url, { timeout?, waitUntil? })` — wait until the page URL
   matches a Playwright glob (`**` crosses `/`, `*` does not, `{a,b}` is a
   choice, `?` is a literal question mark), a RegExp, or a predicate
@@ -73,8 +80,9 @@ running Chromium DevTools endpoint).
   function unsubscribes, as does `page.off(event, listener)`. Both waits and
   listeners receive objects with `url()`, `method()`, `headers()` (lowercase
   names), and async `body()` (Buffer), `text()`, `json()`. Request bodies are
-  the CDP request's post data; responses also expose `status()`. Response
-  body reads wait for transfer completion and decode base64 when necessary.
+  the CDP request's post data; responses also expose `status()` and `ok()`
+  (status 200-299). Response body reads wait for transfer completion and
+  decode base64 when necessary.
   Bodies are cached on completion for response objects delivered to listeners.
   If the transport refuses `Network.getResponseBody`, these reads reject with
   the exported `NetworkBodyUnavailableError` (the transport error is `cause`),

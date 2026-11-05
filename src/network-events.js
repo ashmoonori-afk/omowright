@@ -80,6 +80,7 @@ function recordFor(cdp, sessionId, params) {
       method: record.request.method,
       headers: () => headers(response.headers),
       status: () => response.status,
+      ok: () => response.status >= 200 && response.status <= 299,
       ...bodyReaders(async () => {
         const result = await record.rawBody();
         return Buffer.from(result.body ?? "", result.base64Encoded ? "base64" : "utf8");
@@ -166,6 +167,25 @@ export function subscribeNetwork(page, handlers) {
       }
     }
     stream.close();
+  };
+}
+
+// Holds the shared stream for one navigation call. A frame's document records
+// are exposed so bodies stay readable after the domain is released.
+export function trackDocumentResponses(page, frameId) {
+  const documents = new Map();
+  const dispose = subscribeNetwork(page, {
+    "Network.requestWillBeSent": (params, record) => {
+      if (params.type !== "Document" || params.frameId !== frameId) return;
+      record.exposed = true;
+      // Redirect hops share the loader id; the last hop carries the final response.
+      documents.set(params.loaderId, record);
+    },
+  });
+  return {
+    ready: networkReady(page),
+    response: loaderId => documents.get(loaderId)?.response ?? null,
+    dispose,
   };
 }
 
