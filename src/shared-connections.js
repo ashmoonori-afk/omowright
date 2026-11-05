@@ -116,10 +116,16 @@ function lease(key, entry, connection) {
   });
   const client = connection.cdp;
   // Transport events reach every holder: through a handle, clearListeners
-  // removes only that handle's listeners and emit is refused.
+  // removes only that handle's listeners and emit is refused. The emitter keys
+  // listeners by function, so each registration gets a function of its own:
+  // two holders adding the same function never share one entry that either
+  // could remove (#140).
   const transportEvents = new Proxy(client.transportEvents, readOnly("the shared transport events", (target, property) => {
     ensureOpen(property);
-    if (property === "on") return tracked(target.on.bind(target), subscriptions, transportSubscriptions);
+    if (property === "on") {
+      const on = (name, listener) => target.on(name, (event) => listener(event));
+      return tracked(on, subscriptions, transportSubscriptions);
+    }
     if (property === "clearListeners") return () => unsubscribeAll(transportSubscriptions);
     if (property === "emit") {
       return () => {
