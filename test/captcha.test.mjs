@@ -130,11 +130,16 @@ test("waitFor bounds a never-settling predicate and aborts its operation signal"
   const { captcha } = fixture();
   let signal;
   let calls = 0;
-  const result = await captcha.waitFor({ until: (_page, context) => {
+  const pending = captcha.waitFor({ until: (_page, context) => {
     signal = context.signal;
     calls++;
     return new Promise(() => {});
   }, timeoutMs: 10, pollMs: 1 });
+  // A loaded host can stall past the whole budget before the first evaluation
+  // is scheduled; block synchronously to make that stall deterministic.
+  const stallStart = performance.now();
+  while (performance.now() - stallStart < 15);
+  const result = await pending;
   assert.equal(result.outcome, "timed_out");
   assert.equal(calls, 1);
   assert.equal(signal.aborted, true);
