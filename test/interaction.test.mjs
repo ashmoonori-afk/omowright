@@ -46,6 +46,7 @@ window.addEventListener('mousemove', e => {
   handle.style.left = x + 'px';
   window.__log.push('drag-x-' + Math.round(x));
 });
+
 window.addEventListener('mouseup', () => { if (dragging) window.__log.push('drag-end'); dragging = false; });
 </script></body></html>`)}`;
 
@@ -53,11 +54,114 @@ async function launch() {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-cua-test-"));
   const connection = await connectPipe({
     browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`, "about:blank"],
     storageRoot: ud,
   });
   return { connection, cleanup: async () => { await connection.close(); removeTreeSync(ud); } };
 }
+
+// CDP events can overtake one another across SerialEmitter dispatches. Hold the
+// first page listener until targetCreated, reproducing two attached agent tabs.
+test("popup delivery survives targetCreated before the second page windowOpen handler", { skip: !SHELL, timeout: 30000 }, async () => {
+  const { connection, cleanup } = await launch();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const offWindow = connection.cdp.on("Page.windowOpen", () => gate);
+  const offTarget = connection.cdp.on("Target.targetCreated", ({ targetInfo }) => {
+    if (targetInfo.openerId) release();
+  });
+  try {
+    await connection.newTab();
+    const opener = await connection.newTab();
+    for (const name of ["second-tab-popup-1", "second-tab-popup-2"]) {
+      const opened = opener.waitForEvent("popup", { timeout: 10000 });
+      const checked = opened.then(async popup => {
+        assert.equal(await popup.evaluate("window.name"), name);
+        assert.equal(popup.popupMetadata.windowName, name);
+        assert.ok(createAgentTabs(connection).get(popup.targetId));
+      });
+      await opener.evaluate(`window.open("about:blank", ${JSON.stringify(name)}); void 0`);
+      await checked;
+    }
+  } finally {
+    release(); offWindow(); offTarget(); await cleanup();
+  }
+});
+
+for (const kind of ["user tab with listener", "agent tab without listener"]) {
+  test(`popup adoption excludes ${kind}`, { skip: !SHELL, timeout: 15000 }, async () => {
+    const { connection, cleanup } = await launch();
+    const user = kind.startsWith("user");
+    let windowDone;
+    const windowHandled = new Promise(resolve => { windowDone = resolve; });
+    // Force windowOpen-first here so the old implementation reliably adopts.
+    const offTargetGate = connection.cdp.on("Target.targetCreated", async ({ targetInfo }) => {
+      if (targetInfo.openerId) await windowHandled;
+    });
+    try {
+      const opener = user
+        ? await connection.attachPage((await connection.listTargets()).find(t => t.type === "page").id)
+        : await connection.newTab();
+      const offPopup = user ? opener.on("popup", () => {}) : () => {};
+      const attaching = [];
+      const attach = connection.attachPage.bind(connection);
+      connection.attachPage = id => {
+        const operation = attach(id);
+        attaching.push(operation);
+        return operation;
+      };
+      const offWindow = connection.cdp.on("Page.windowOpen", () => windowDone());
+      let targetDone;
+      const targetHandled = new Promise(resolve => { targetDone = resolve; });
+      const offTarget = connection.cdp.on("Target.targetCreated", ({ targetInfo }) => {
+        if (targetInfo.openerId === opener.targetId) targetDone(targetInfo.targetId);
+      });
+      await opener.evaluate('window.open("about:blank", "unowned-popup"); void 0');
+      const targetId = await targetHandled;
+      await Promise.all(attaching);
+      assert.equal(createAgentTabs(connection).get(targetId), null, "unsubscribed or user popups must remain unowned");
+      assert.equal(attaching.length, 0, "no popup domains or viewport may be enabled");
+      offWindow(); offTarget(); offPopup();
+    } finally {
+      windowDone(); offTargetGate(); await cleanup();
+    }
+  });
+}
+
+test("popup destroyed before attach rejects its waiter with the lifecycle error", { skip: !SHELL, timeout: 15000 }, async () => {
+  const { connection, cleanup } = await launch();
+  let windowDone;
+  const windowHandled = new Promise(resolve => { windowDone = resolve; });
+  const offGate = connection.cdp.on("Target.targetCreated", async ({ targetInfo }) => {
+    if (targetInfo.openerId) await windowHandled;
+  });
+  try {
+    const opener = await connection.newTab();
+    const offWindow = connection.cdp.on("Page.windowOpen", () => windowDone());
+    const attach = connection.attachPage.bind(connection);
+    connection.attachPage = async id => {
+      if (id === opener.targetId) return attach(id);
+      const destroyed = new Promise(resolve => {
+        const off = connection.cdp.on("Target.targetDestroyed", info => {
+          if (info.targetId === id) { off(); resolve(); }
+        });
+      });
+      await opener.evaluate('window.closingPopup.eval("window.close()"); void 0');
+      await destroyed;
+      return attach(id);
+    };
+    const checked = assert.rejects(opener.waitForEvent("popup", { timeout: 2000 }), error => {
+      assert.doesNotMatch(error.message, /Timed out waiting/);
+      assert.match(error.message, /closed|target|session/i);
+      return true;
+    });
+    await opener.evaluate('window.closingPopup = window.open("about:blank", "closing-popup"); void 0');
+    await checked;
+    offWindow();
+  } finally {
+    windowDone(); offGate(); await cleanup();
+  }
+});
 
 async function boundsOf(page, selector) {
   return page.evaluate(`(() => {
@@ -312,8 +416,7 @@ test("captcha clicks checkbox, drags slider, and OCRs text region", { skip: !SHE
   }
 });
 
-// Public page API: clicking a target="_blank" link opens the new tab the way the browser does, so a QA script can attach
-// it from listTargets() (#56: the click threw "Popup tab control requires the extension bridge" on every transport).
+// Public popup API: both opening paths deliver an attached, usable, owned page.
 // Served over http: Chromium refuses a page-initiated top-level navigation to a data: URL.
 test("clicking a target=_blank link opens the linked page in a new tab", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const site = createServer((req, res) => {
@@ -328,13 +431,29 @@ test("clicking a target=_blank link opens the linked page in a new tab", { skip:
   try {
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     await page.goto(`${origin}/`);
-    const opened = page.waitForEvent("popup", { timeout: 10000 });
-    await page.locator("#blank").click();
-    assert.equal((await opened).url, `${origin}/linked`, "the browser opened the linked URL");
-    const target = (await connection.listTargets()).find(t => t.url === `${origin}/linked`);
-    assert.ok(target, "the new tab is listed");
-    const tab = await connection.attachPage(target.id ?? target.targetId);
-    assert.equal(await tab.title(), "Linked page");
+    const tabs = createAgentTabs(connection);
+    for (const trigger of ["window.open", "target=_blank"]) {
+      let resolveListener;
+      const listened = new Promise(resolve => { resolveListener = resolve; });
+      const off = page.on("popup", resolveListener);
+      const opened = page.waitForEvent("popup", { timeout: 10000 });
+      if (trigger === "window.open") await page.evaluate(`window.open(${JSON.stringify(`${origin}/linked`)}, "qa-popup"); void 0`);
+      else await page.locator("#blank").click();
+      const popup = await opened;
+      off();
+      assert.equal(typeof popup.url, "function", `${trigger} delivers a page, not metadata`);
+      assert.equal(await listened, popup, "on and waitForEvent receive the same page");
+      assert.equal(popup.url(), `${origin}/linked`);
+      assert.deepEqual(popup.popupMetadata, { url: `${origin}/linked`, windowName: trigger === "window.open" ? "qa-popup" : "_blank" });
+      assert.match((await popup.snapshot()).tree, /the linked page body text/);
+      await popup.goto(`${origin}/`);
+      assert.equal(popup.url(), `${origin}/`);
+      assert.match((await popup.snapshot()).tree, /Open in a new tab/);
+      assert.equal(tabs.get(popup.targetId).page, popup, "popup belongs to the connection's manager");
+    }
+    await tabs.closeAll();
+    const remaining = await connection.listTargets();
+    assert.ok(!remaining.some(target => target.url.startsWith(origin)), "closing owned tabs closes the popups too");
   } finally {
     await cleanup();
     site.close();
