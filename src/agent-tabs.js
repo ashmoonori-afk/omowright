@@ -47,6 +47,14 @@ export class AgentTabManager {
     // CloakBrowser headless defers renderer startup for background targets until
     // activation; activating before attach avoids Page.enable timing out.
     if (await this.#isHeadless()) await this.#connection.cdp.send("Target.activateTarget", { targetId });
+    return this.adopt(targetId, { viewport });
+  }
+
+  async adopt(targetId, options = {}) {
+    if (this.#disposed) throw Error("Agent tab manager is disposed");
+    const existing = this.#owned.get(targetId);
+    if (existing) return this.#public(existing);
+    const viewport = { ...this.viewport, ...(options.viewport ?? {}) };
     const record = { targetId, page: null, viewport: Object.freeze({ ...viewport }), repinQueue: Promise.resolve() };
     this.#owned.set(targetId, record);
     try {
@@ -145,6 +153,10 @@ export class AgentTabManager {
     this.#unsubscribers = [];
     if (failure) throw failure;
   }
+}
+
+export function getAgentTabs(connection) {
+  return managers.get(connection);
 }
 
 export function createAgentTabs(connection, options = {}) {

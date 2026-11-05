@@ -76,13 +76,15 @@ test("BrowserConnection exposes newTab on the attach path", async () => {
   const cdp = {
     isHeadless: true,
     transportEvents: new Emitter(),
-    on: () => () => {},
+    events: new Emitter(),
+    on: (name, listener) => cdp.events.on(name, listener),
     ensureConnected: async () => {},
     discoverTargets: async () => [],
     close: async () => {},
     send: async (method, params, sessionId, options) => {
       calls.push({ method, params, sessionId, options });
       if (method === "Target.createTarget") return { targetId: "attached-tab" };
+      if (method === "Target.closeTarget") cdp.events.emit("Target.targetDestroyed", { targetId: params.targetId });
       return {};
     },
   };
@@ -99,5 +101,6 @@ test("BrowserConnection exposes newTab on the attach path", async () => {
   assert.ok(order.indexOf("Target.activateTarget") < order.indexOf("attachPage"), `activation must precede attach: ${order.join(", ")}`);
   assert.ok(order.includes("Emulation.setDeviceMetricsOverride"), "newTab must repin the viewport");
   assert.equal(createAgentTabs(connection).get("attached-tab").page, page, "newTab must register with the per-connection manager");
-  await createAgentTabs(connection).dispose({ closeOwned: false });
+  await connection.close();
+  assert.equal(calls.some(call => call.method === "Target.closeTarget"), false, "disconnect must leave ordinary newTab targets open");
 });
