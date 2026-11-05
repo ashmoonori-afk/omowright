@@ -6,16 +6,33 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { removeTreeSync } from "./remove-tree.mjs";
 
-const [mode, shell] = process.argv.slice(2);
+const [mode, shell, ffmpeg] = process.argv.slice(2);
 const root = mkdtempSync(path.join(tmpdir(), "omowright-video-failure-"));
 const spawn = childProcess.spawn;
 let encoder;
 let encoderClosed;
 let closed = false;
-// Change only executable selection; keep real process, stream and exit behavior.
+let writesAfterClose = 0;
+let endsAfterClose = 0;
+// Substitute the encoder command; keep real process, stream and exit behavior.
 childProcess.spawn = (command, args, options) => {
   if (command !== "ffmpeg") return spawn(command, args, options);
-  encoder = spawn(mode === "missing" ? path.join(root, "missing-ffmpeg") : process.execPath, args, options);
+  // A finite real encoder produces a valid clip and closes stdin before stop().
+  // Its exit is the signal; no timing assumptions about screencast delivery.
+  encoder = mode === "early-success"
+    ? spawn(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=size=32x32",
+      "-frames:v", "1", "-c:v", "libvpx", "-y", args.at(-1)], options)
+    : spawn(mode === "missing" ? path.join(root, "missing-ffmpeg") : process.execPath, args, options);
+  for (const method of ["write", "end"]) {
+    const original = encoder.stdin[method];
+    encoder.stdin[method] = function (...args) {
+      if (this.destroyed || this.writableEnded) {
+        if (method === "write") writesAfterClose++;
+        else endsAfterClose++;
+      }
+      return original.apply(this, args);
+    };
+  }
   encoderClosed = new Promise(resolve => encoder.once("close", () => { closed = true; resolve(); }));
   return encoder;
 };
@@ -45,13 +62,25 @@ try {
       failure = error;
     }
   }
-  assert.ok(failure, "recording must reject a failed encoder");
-  assert.equal(failure.name, "VideoRecordingError");
-  assert.ok(failure instanceof VideoRecordingError);
-  assert.equal(closed, true, "encoder is reaped before recording rejects");
+  if (mode === "early-success") {
+    assert.equal(failure, undefined, "successful encoder exit is not a pipe failure");
+    const clip = await video.path();
+    const decoded = childProcess.spawnSync(ffmpeg, ["-v", "error", "-i", clip, "-f", "null", "-"]);
+    assert.equal(decoded.status, 0, decoded.stderr.toString());
+  } else {
+    assert.ok(failure, "recording must reject a failed encoder");
+    assert.equal(failure.name, "VideoRecordingError");
+    assert.ok(failure instanceof VideoRecordingError);
+  }
+  assert.equal(closed, true, "encoder is reaped before recording settles");
   assert.equal(encoder.stdin.destroyed, true, "encoder stdin is closed");
   assert.ok(encoder.exitCode !== null || encoder.signalCode !== null);
-  console.log(JSON.stringify({ mode, error: failure.name, closed }));
+  assert.equal(writesAfterClose, 0, "closed encoder input receives no further frames");
+  assert.equal(endsAfterClose, 0, "closed encoder input is not ended again");
+  if (mode === "early-exit") {
+    assert.match(failure.message, /bad option|unknown option|unrecognized option/i);
+  }
+  console.log(JSON.stringify({ mode, error: failure?.name ?? null, closed }));
 } finally {
   await connection.close();
   childProcess.spawn = spawn;

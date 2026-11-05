@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, existsSync, globSync, readdirSync, readlinkSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, existsSync, globSync, readdirSync, readlinkSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,19 +38,21 @@ function findFfmpeg() {
 
 const FFMPEG = findFfmpeg();
 
-for (const mode of ["missing", "early-exit"]) {
-  test(`page video ${mode} encoder rejects without crashing its host`, {
-    skip: !SHELL && "no chromium binary found",
+for (const mode of ["missing", "early-exit", "early-success"]) {
+  // The successful early-close case protects exit-status handling independently
+  // of the normal screencast test, while decoding an actual encoder output.
+  test(`page video ${mode} encoder settles without crashing its host`, {
+    skip: !SHELL ? "no chromium binary found" : mode === "early-success" && !FFMPEG && "no ffmpeg",
     timeout: 60000,
   }, () => {
     // The reported crash is in a Node host. Isolate it so an uncaught rejection
     // fails this assertion under either test runner instead of killing the suite.
     const result = spawnSync("node", [
-      fileURLToPath(new URL("./fixtures/video-failure-host.mjs", import.meta.url)), mode, SHELL,
+      fileURLToPath(new URL("./fixtures/video-failure-host.mjs", import.meta.url)), mode, SHELL, FFMPEG ?? "",
     ], { encoding: "utf8", timeout: 45000 });
     assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
     const receipt = JSON.parse(result.stdout.trim().split("\n").at(-1));
-    assert.deepEqual(receipt, { mode, error: "VideoRecordingError", closed: true });
+    assert.deepEqual(receipt, { mode, error: mode === "early-success" ? null : "VideoRecordingError", closed: true });
   });
 }
 
@@ -68,11 +70,9 @@ test("page video start and stop write a playable clip through the package entry"
   });
   const originalPath = process.env.PATH;
   try {
-    // Make the recorder's bare `ffmpeg` command use the qualified PATH binary.
-    const encoderDir = path.join(ud, "encoder");
-    mkdirSync(encoderDir);
-    copyFileSync(FFMPEG, path.join(encoderDir, process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"));
-    process.env.PATH = `${encoderDir}${path.delimiter}${originalPath ?? ""}`;
+    // Keep the qualified binary in place: Windows package-manager shims and
+    // shared builds can depend on files next to the executable.
+    process.env.PATH = `${path.dirname(FFMPEG)}${path.delimiter}${originalPath ?? ""}`;
     const page = await connection.newTab("about:blank");
     const video = page.video();
     await video.start({ path: "capture/raw.webm", size: { width: 320, height: 240 } });
