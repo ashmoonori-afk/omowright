@@ -38,6 +38,26 @@ running Chromium DevTools endpoint).
   `data-testid` exactly (or by RegExp); `selectors.setTestIdAttribute(name)`
   switches the attribute for locators created afterwards.
 - `page.evaluate(expression)` — run JS in the page.
+- `page.waitForRequest(urlOrPredicate, { timeout? })` /
+  `page.waitForResponse(urlOrPredicate, { timeout? })` — wait for the next
+  matching request or response headers (default timeout: 30000ms). Match an
+  exact URL string, a RegExp, or a sync/async predicate over the object.
+  Register the wait before triggering the request.
+- `page.on("request" | "response", listener)` — observe traffic; the returned
+  function unsubscribes, as does `page.off(event, listener)`. Both waits and
+  listeners receive objects with `url()`, `method()`, `headers()` (lowercase
+  names), and async `body()` (Buffer), `text()`, `json()`. Request bodies are
+  the CDP request's post data; responses also expose `status()`. Response
+  body reads wait for transfer completion and decode base64 when necessary.
+  Bodies are cached on completion for response objects delivered to listeners.
+  If the transport refuses `Network.getResponseBody`, these reads reject with
+  the exported `NetworkBodyUnavailableError` (the transport error is `cause`),
+  never `null`. Failed transfers and redirects also reject body reads.
+  Network subscriptions and domain ownership are shared with
+  `createNetworkSnoop()` and readiness tracking. They start on demand and
+  release after the last consumer and its pending response bodies finish;
+  no Runtime domain is enabled. A refused Network enable does not break page
+  setup, but a transport that emits no network events will time out waits.
 - `page.screenshot(options?)` — image bytes (path, fullPage, clip, type, quality).
 - `page.pdf(options?)` — PDF bytes (path, format, margin, printBackground).
 - `page.keyboard` / `page.mouse` — press, type, insertText / move, click, wheel.

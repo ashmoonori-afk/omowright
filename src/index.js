@@ -63,6 +63,7 @@ export { toHar } from "./har.js";
 export { requestHuman } from "./human-handoff.js";
 export { describeLayers, layersHeader, snapshotWithLayers } from "./layers.js";
 export { createNetworkSnoop } from "./network-snoop.js";
+export { NetworkBodyUnavailableError } from "./network-events.js";
 export { createRoutes } from "./routes.js";
 export { collectWhileScrolling } from "./scroll-collect.js";
 export { createTrace } from "./trace.js";
