@@ -141,8 +141,9 @@ running Chromium DevTools endpoint).
   Full bounds, timing, cancellation, and acceptance examples:
   [CAPTCHA skill](presets/captcha/SKILL.md).
 - `createChromeApi(connection, { profilePath?, downloadDir? })` — Chrome
-  MV3-shaped APIs: `tabs.query/get`, `windows.get/getCurrent/getLastFocused/
-  getAll`, `bookmarks.*` (read-only), `history.search/getVisits`,
+  MV3-shaped APIs: `tabs.query/get`, `windows.get/getCurrent/getAll` (no
+  `focused` field and `windows.getLastFocused` throws: CDP exposes no window
+  focus), `bookmarks.*` (read-only), `history.search/getVisits`,
   `downloads.search/download`, `topSites.get`. Profile-backed methods need
   `profilePath`. Write methods throw `UnsupportedOperationError` (extension
   bridge required). Full reference: presets/chrome/.
