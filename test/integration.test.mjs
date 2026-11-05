@@ -207,3 +207,54 @@ test("goto resolves on a loaded sparse page and on a frameset page", { skip: !SH
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+// Public locator contract (#129): getByRole, getByText and getByLabel see elements inside open
+// shadow roots, nested ones included, and never inside closed roots. Count and action resolution
+// run separate in-page queries, so both are exercised against a real browser.
+test("role, text and label locators pierce nested open shadows but not closed ones", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-shadow-role-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab("about:blank");
+    await page.evaluate(() => {
+      document.body.innerHTML = '<button>Save light</button><div id="host"></div><div id="closed"></div>';
+      const shadow = document.querySelector("#host").attachShadow({ mode: "open" });
+      shadow.innerHTML = '<button>Save shadow</button><p>Shadow paragraph</p>'
+        + '<label for="email">Shadow email</label><input id="email"><div id="nested"></div>';
+      shadow.querySelector("button").onclick = () => { document.body.dataset.clicked = "shadow"; };
+      shadow.querySelector("#nested").attachShadow({ mode: "open" }).innerHTML = '<button aria-labelledby="nested-name">x</button>'
+        + '<span id="nested-name">Save nested</span><p>Nested paragraph</p><label>Nested name <input></label>';
+      document.querySelector("#closed").attachShadow({ mode: "closed" }).innerHTML = '<button>Save closed</button>'
+        + '<p>Closed paragraph</p><label for="c">Closed email</label><input id="c">';
+    });
+
+    assert.equal(await page.getByRole("button", { name: "Save shadow" }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Save nested", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: /^Save/ }).count(), 3);
+    assert.equal(await page.getByRole("button", { name: "Save closed" }).count(), 0);
+    await page.getByRole("button", { name: "Save shadow" }).click();
+    assert.equal(await page.evaluate("document.body.dataset.clicked"), "shadow");
+
+    assert.equal(await page.getByText("Shadow paragraph").textContent(), "Shadow paragraph");
+    assert.equal(await page.getByText("Nested paragraph").count(), 1);
+    assert.equal((await page.locator("#host").locator("text:Nested paragraph").all()).length, 1);
+    assert.equal(await page.getByText("Closed paragraph").count(), 0);
+
+    await page.getByLabel("Shadow email").fill("shadow@example.com");
+    assert.equal(await page.evaluate("document.querySelector('#host').shadowRoot.querySelector('#email').value"), "shadow@example.com");
+    assert.equal(await page.getByLabel("Nested name").count(), 1);
+    assert.equal(await page.getByLabel("Closed email").count(), 0);
+
+    // 150k elements in one shadow scope exceed the engine's argument limit, so a traversal that
+    // spreads a NodeList into push() throws RangeError here instead of matching.
+    await page.evaluate(() => {
+      const bulk = document.createElement("div");
+      bulk.innerHTML = "<i></i>".repeat(150000) + "<p>Bulk paragraph</p>";
+      document.querySelector("#host").shadowRoot.querySelector("#nested").shadowRoot.append(bulk);
+    });
+    assert.equal(await page.getByText("Bulk paragraph").count(), 1);
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+  }
+});

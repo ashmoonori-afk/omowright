@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { pageBundle } from "./injected.js";
+import { queryOpenShadowAll } from "./open-shadow-query.js";
 import { targetCreationCapability } from "./internal-capability.js";
 import { normalizeDialogPolicy, resolveDialogAction } from "./dialog-policy.js";
 
@@ -784,7 +785,8 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
             nth,
           };
         };
-        const descendants = (root) => Array.from((root instanceof Document ? root : root).querySelectorAll('*'));
+        const queryOpenShadowAll = (${queryOpenShadowAll.toString()});
+        const descendants = (root) => queryOpenShadowAll(root, '*');
         const textMatches = (root, matcher) => {
           const matches = descendants(root).filter((node) => matcher && matchesText(node, matcher));
           return matches.filter((node) => !Array.from(node.children).some((child) => matchesText(child, matcher)));
@@ -793,13 +795,13 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
         // Prefer the actionable associated control so getByLabel() doesn't latch onto
         // an inert duplicate and fail later in the actionability pipeline.
         const labelMatches = (root, matcher) => {
-          const labels = Array.from((root instanceof Document ? root : root).querySelectorAll('label'))
+          const labels = queryOpenShadowAll(root, 'label')
             .filter((label) => matcher && matchesText(label, matcher));
           const controlSelector = 'input:not([type="hidden"]), textarea, select';
           const seen = new Set();
           const controls = [];
           for (const label of labels) {
-            const explicitControl = label.control || (label.htmlFor ? document.getElementById(label.htmlFor) : null);
+            const explicitControl = label.control || (label.htmlFor ? label.getRootNode().getElementById(label.htmlFor) : null);
             // Virginia DMV's Bootstrap form uses a label with no htmlFor, followed
             // immediately by its input in the same row.
             const siblingControl = label.nextElementSibling?.matches?.(controlSelector) ? label.nextElementSibling : null;
@@ -916,7 +918,8 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
             nth,
           };
         };
-        const descendants = (root) => Array.from((root instanceof Document ? root : root).querySelectorAll('*'));
+        const queryOpenShadowAll = (${queryOpenShadowAll.toString()});
+        const descendants = (root) => queryOpenShadowAll(root, '*');
         const textMatches = (root, matcher) => {
           const matches = descendants(root).filter((node) => matcher && matchesText(node, matcher));
           return matches.filter((node) => !Array.from(node.children).some((child) => matchesText(child, matcher)));
@@ -924,13 +927,13 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
         // Keep label-based locators resilient when one label name points at both
         // hidden template inputs and the visible live control.
         const labelMatches = (root, matcher) => {
-          const labels = Array.from((root instanceof Document ? root : root).querySelectorAll('label'))
+          const labels = queryOpenShadowAll(root, 'label')
             .filter((label) => matcher && matchesText(label, matcher));
           const controlSelector = 'input:not([type="hidden"]), textarea, select';
           const seen = new Set();
           const controls = [];
           for (const label of labels) {
-            const explicitControl = label.control || (label.htmlFor ? document.getElementById(label.htmlFor) : null);
+            const explicitControl = label.control || (label.htmlFor ? label.getRootNode().getElementById(label.htmlFor) : null);
             // Virginia DMV's Bootstrap form uses a label with no htmlFor, followed
             // immediately by its input in the same row.
             const siblingControl = label.nextElementSibling?.matches?.(controlSelector) ? label.nextElementSibling : null;
@@ -1045,7 +1048,8 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
             nth,
           };
         };
-        const descendants = (root) => Array.from((root instanceof Document ? root : root).querySelectorAll('*'));
+        const queryOpenShadowAll = (${queryOpenShadowAll.toString()});
+        const descendants = (root) => queryOpenShadowAll(root, '*');
         const textMatches = (root, matcher) => {
           const matches = descendants(root).filter((node) => matcher && matchesText(node, matcher));
           // Text selectors should resolve to the innermost visible text element,
@@ -1055,13 +1059,13 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
         // Keep label selectors aligned with what a human can actually click when
         // pages duplicate label text across hidden template controls.
         const labelMatches = (root, matcher) => {
-          const labels = Array.from((root instanceof Document ? root : root).querySelectorAll('label'))
+          const labels = queryOpenShadowAll(root, 'label')
             .filter((label) => matcher && matchesText(label, matcher));
           const controlSelector = 'input:not([type="hidden"]), textarea, select';
           const seen = new Set();
           const controls = [];
           for (const label of labels) {
-            const explicitControl = label.control || (label.htmlFor ? document.getElementById(label.htmlFor) : null);
+            const explicitControl = label.control || (label.htmlFor ? label.getRootNode().getElementById(label.htmlFor) : null);
             // Virginia DMV's Bootstrap form uses a label with no htmlFor, followed
             // immediately by its input in the same row.
             const siblingControl = label.nextElementSibling?.matches?.(controlSelector) ? label.nextElementSibling : null;
@@ -1156,7 +1160,7 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
                 if (labelledBy) {
                   const labelText = labelledBy
                     .split(/\\s+/)
-                    .map((id) => normalizeText(node.ownerDocument?.getElementById(id)?.textContent))
+                    .map((id) => normalizeText(node.getRootNode().getElementById?.(id)?.textContent))
                     .filter(Boolean)
                     .join(' ');
                   if (labelText) return labelText;
@@ -1281,22 +1285,14 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
                 return true;
               };
 
-              const root = document.documentElement || document.body;
-              if (!root) {
-                return null;
-              }
-
               const matches = [];
-              const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-              let current = root;
-              while (current) {
+              for (const current of (${queryOpenShadowAll.toString()})(document, '*')) {
                 if (matchesState(current) && getRole(current) === query.role) {
                   const name = getAccessibleName(current);
                   if (nameMatches(name)) {
                     matches.push(current);
                   }
                 }
-                current = walker.nextNode();
               }
 
               return matches[query.nth] ?? null;
@@ -1335,7 +1331,7 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
             if (labelledBy) {
               const labelText = labelledBy
                 .split(/\\s+/)
-                .map((id) => normalizeText(node.ownerDocument?.getElementById(id)?.textContent))
+                .map((id) => normalizeText(node.getRootNode().getElementById?.(id)?.textContent))
                 .filter(Boolean)
                 .join(' ');
               if (labelText) return labelText;
@@ -1460,22 +1456,14 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
             return true;
           };
 
-          const root = document.documentElement || document.body;
-          if (!root) {
-            return 0;
-          }
-
           let count = 0;
-          const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-          let current = root;
-          while (current) {
+          for (const current of (${queryOpenShadowAll.toString()})(document, '*')) {
             if (matchesState(current) && getRole(current) === query.role) {
               const name = getAccessibleName(current);
               if (nameMatches(name)) {
                 count += 1;
               }
             }
-            current = walker.nextNode();
           }
 
           return count;
