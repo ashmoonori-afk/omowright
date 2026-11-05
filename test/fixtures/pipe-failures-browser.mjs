@@ -51,6 +51,10 @@ input.on("data", chunk => {
       case "Fixture.end":
         output.end();
         break;
+      // One reply far larger than a pipe read, so it reaches the client in many chunks.
+      case "Fixture.large":
+        write({ id, result: { data: "x".repeat(params.bytes) } });
+        break;
       case "Fixture.shareOutput": {
         // A process that outlives this one and keeps the parent's read pipe open,
         // like a browser helper that inherited the CDP fd.
