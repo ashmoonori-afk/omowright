@@ -1,7 +1,7 @@
 /**
  * Every CDP command the page path sends (`connect()`, the page API, frame snapshots, agent tabs and their viewport
  * pin). A scoped endpoint can allow exactly these and refuse the rest. Optional modules send more and need a full
- * endpoint: routes, emulation, cookies, network snoop, `createEvents()` (`Browser.setDownloadBehavior`), the
+ * endpoint: routes, emulation, cookies, `createEvents()` (`Browser.setDownloadBehavior`), the
  * bridge and `connectPipe`. `test/scoped-endpoint.test.mjs` runs navigate, snapshot, fill, click, evaluate,
  * screenshot and agent tabs through such an endpoint; the other listed methods (PDF, history, reload, dialogs, file
  * upload, screencast, lifecycle) are listed from the source, not exercised there. No cookie read is listed: an
@@ -24,7 +24,9 @@ export const OMOWRIGHT_PAGE_CDP_METHODS = Object.freeze([
   "Input.dispatchMouseEvent",
   "Input.insertText",
   "Inspector.enable",
+  "Network.disable",
   "Network.enable",
+  "Network.getResponseBody",
   "Page.addScriptToEvaluateOnNewDocument",
   "Page.captureScreenshot",
   "Page.close",
