@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isPidAlive } from "./instance-lock.js";
-import { ownProcessStartTime, processStartTime } from "./lock-file.js";
+import { ownProcessStartTime, processStartTime } from "./process-start-time.js";
 
 export const TERM_GRACE_MS = 5_000;
 const PID_FILE_NAME = "omowright-browser.pid";
