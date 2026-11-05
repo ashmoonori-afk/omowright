@@ -278,6 +278,60 @@ const listenerRows = [
 ];
 
 for (const kind of ["pipe", "ws"]) {
+  test(`live ${kind}: page close promptly rejects pending evaluations with a page closed error`, {
+    skip: !SHELL && "no chromium binary found",
+    timeout: 45_000,
+  }, async () => {
+    const ud = mkdtempSync(path.join(tmpdir(), `omowright-close-${kind}-`));
+    const { connection, stop } = await openTransport(kind, ud);
+    let timer;
+    let off;
+    try {
+      const page = await connection.newTab();
+      const other = await connection.newTab();
+      const sessionId = await page.resolveSessionId();
+      await connection.cdp.send("Runtime.enable", undefined, sessionId);
+      const started = new Set();
+      const ready = Promise.withResolvers();
+      off = connection.cdp.on("Runtime.consoleAPICalled", (params, meta) => {
+        if (meta.sessionId !== sessionId) return;
+        const marker = params.args?.[0]?.value;
+        if (marker === "close-pending-user" || marker === "close-pending-cdp") started.add(marker);
+        if (started.size === 2) ready.resolve();
+      });
+      const evaluated = page.evaluate(() => {
+        console.debug("close-pending-user");
+        return new Promise(() => {});
+      }).then(() => assert.fail("evaluate resolved"), error => error);
+      const raw = connection.cdp.send("Runtime.evaluate", {
+        expression: 'console.debug("close-pending-cdp"); new Promise(() => {})',
+        awaitPromise: true,
+      }, sessionId).then(() => assert.fail("CDP evaluate resolved"), error => error);
+      await ready.promise;
+      const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Error("page close exceeded 1500 ms")), 1500);
+      });
+      const results = await Promise.race([
+        Promise.all([page.close(), evaluated, raw]),
+        deadline,
+      ]);
+      for (const error of results.slice(1)) {
+        assert.equal(error.name, "CdpSessionDetachedError");
+        assert.match(error.message, /page closed/i);
+        assert.equal(error.sessionId, sessionId);
+      }
+      assert.equal(await other.evaluate(() => 6 * 7), 42, "another page remains usable");
+    } finally {
+      clearTimeout(timer);
+      off?.();
+      await connection.close().catch(() => {});
+      await stop();
+      removeTreeSync(ud);
+    }
+  });
+}
+
+for (const kind of ["pipe", "ws"]) {
   test(`live ${kind}: a dialog listener answers through the Dialog object, and the policy answers the rest`, {
     skip: !SHELL && "no chromium binary found",
     timeout: 60_000,
