@@ -127,6 +127,22 @@ jobs:
           "$bin" --version
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
 
+      - name: Repeat timer teardown 30 times per runtime
+        env:
+          SHELL_BIN: ${{ steps.browser.outputs.bin }}
+        shell: bash
+        run: |
+          for runtime in node bun; do
+            for i in $(seq 1 30); do
+              if [ "$runtime" = node ]; then
+                node --test --test-name-pattern="settled waits and connection teardown leave no timers" test/wait-for-function.test.mjs
+              else
+                bun test --test-name-pattern="settled waits and connection teardown leave no timers" test/wait-for-function.test.mjs
+              fi
+              echo "TIMER_REPETITION_PASS $runtime $i/30"
+            done
+          done
+
       - name: bun test
         env:
           SHELL_BIN: ${{ steps.browser.outputs.bin }}
