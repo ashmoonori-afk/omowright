@@ -83,6 +83,14 @@ export class PipeCdpClient {
       ...this.#spawnOptions,
       stdio,
     });
+    // A spawn that fails (missing or non-executable browserPath) has no pid and
+    // emits "error" instead of "spawn"; unheard, that error crashes the caller.
+    const spawnFailed = new Promise(resolve => this.#child.once("error", resolve));
+    if (this.#child.pid === undefined) {
+      const error = await spawnFailed;
+      this.#child = undefined;
+      throw error;
+    }
     const browserPid = this.#child.pid;
     // A helper process can keep an old launch's pipe open after that browser is
     // gone; its late events must never touch the launch that replaced it.

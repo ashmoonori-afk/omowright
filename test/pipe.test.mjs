@@ -366,3 +366,25 @@ test("a SIGKILL to the caller's process group leaves the browser to quit on pipe
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A missing browserPath fails the spawn with an "error" event and no "spawn".
+// Run the call in a child process: on a regression the unhandled error kills
+// the process that made the call, which would otherwise be this test runner.
+test("connectPipe with a missing browserPath rejects with the spawn error and keeps its caller alive", { timeout: 15_000 }, async t => {
+  const dir = scratchDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const missing = path.join(dir, "no-such-browser");
+  const script = `import { connectPipe } from ${JSON.stringify(new URL("../src/index.js", import.meta.url).href)};
+try { await connectPipe({ browserPath: ${JSON.stringify(missing)} }); console.log(JSON.stringify({ resolved: true })); }
+catch (error) { console.log(JSON.stringify({ code: error.code, message: error.message })); }`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+  const [code] = await once(child, "exit");
+  assert.equal(code, 0, `the caller died: ${stderr}`);
+  const outcome = JSON.parse(stdout.trim().split("\n").at(-1));
+  assert.equal(outcome.code, "ENOENT");
+  assert.ok(outcome.message.includes(missing), outcome.message);
+});
