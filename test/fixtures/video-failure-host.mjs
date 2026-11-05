@@ -19,10 +19,13 @@ childProcess.spawn = (command, args, options) => {
   if (command !== "ffmpeg") return spawn(command, args, options);
   // A finite real encoder produces a valid clip and closes stdin before stop().
   // Its exit is the signal; no timing assumptions about screencast delivery.
+  // A "stalled" encoder drains its input and keeps running after stdin EOF, like one that hangs while finishing.
   encoder = mode === "early-success"
     ? spawn(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "color=size=32x32",
       "-frames:v", "1", "-c:v", "libvpx", "-y", args.at(-1)], options)
-    : spawn(mode === "missing" ? path.join(root, "missing-ffmpeg") : process.execPath, args, options);
+    : mode === "stalled"
+      ? spawn(process.execPath, ["-e", "process.stdin.resume(); setInterval(() => {}, 60000);"], options)
+      : spawn(mode === "missing" ? path.join(root, "missing-ffmpeg") : process.execPath, args, options);
   for (const method of ["write", "end"]) {
     const original = encoder.stdin[method];
     encoder.stdin[method] = function (...args) {
@@ -54,13 +57,20 @@ try {
     failure = error;
   }
   if (!failure) {
-    // Subscribe in spawn(), then wait for the real early exit before writing.
-    await encoderClosed;
+    // Subscribe in spawn(), then wait for the real early exit before writing; a stalled encoder never exits.
+    if (mode !== "stalled") await encoderClosed;
     await page.evaluate(() => { document.body.textContent = "Encoder already exited"; });
+    // stop() bounds its wait for the encoder to exit; this deadline only turns an unbounded wait into a failure.
+    let deadline;
     try {
-      await video.stop();
+      await Promise.race([
+        video.stop(),
+        new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("video.stop() did not settle within 30000ms")), 30000); }),
+      ]);
     } catch (error) {
       failure = error;
+    } finally {
+      clearTimeout(deadline);
     }
   }
   if (mode === "early-success") {
@@ -70,12 +80,19 @@ try {
     assert.equal(decoded.status, 0, decoded.stderr.toString());
   } else {
     assert.ok(failure, "recording must reject a failed encoder");
-    assert.equal(failure.name, "VideoRecordingError");
+    assert.equal(failure.name, "VideoRecordingError", failure.message);
     assert.ok(failure instanceof VideoRecordingError);
   }
   assert.equal(closed, true, "encoder is reaped before recording settles");
   assert.equal(encoder.stdin.destroyed, true, "encoder stdin is closed");
   assert.ok(encoder.exitCode !== null || encoder.signalCode !== null);
+  // Only stop()'s bound kills an encoder that never exits by itself.
+  if (mode === "stalled") {
+    assert.match(failure.message, /ffmpeg did not exit within 10000ms after its input closed; it was killed/);
+    assert.equal(encoder.signalCode, "SIGKILL", "the stalled encoder is killed");
+  }
+  // A spawn that failed ("missing") never had a process; any started encoder must be gone at the OS level.
+  if (encoder.pid !== undefined) assert.throws(() => process.kill(encoder.pid, 0), { code: "ESRCH" }, "no encoder process outlives the recording");
   assert.equal(writesAfterClose, 0, "closed encoder input receives no further frames");
   assert.equal(endsAfterClose, 0, "closed encoder input is not ended again");
   if (mode === "early-exit") {
@@ -83,6 +100,8 @@ try {
   }
   console.log(JSON.stringify({ mode, error: failure?.name ?? null, closed }));
 } finally {
+  // A failed assertion must not leave a live stub holding this host open.
+  encoder?.kill("SIGKILL");
   await connection?.close();
   childProcess.spawn = spawn;
   syncBuiltinESMExports();
