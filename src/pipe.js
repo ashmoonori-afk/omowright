@@ -10,6 +10,7 @@ import {
 } from "./browser-process.js";
 import { BrowserConnection } from "./connection.js";
 import { Dialog, answerWithPolicy, normalizeDialogPolicy } from "./dialog-policy.js";
+import { NulFrameReader } from "./nul-frames.js";
 import { targetCreationCapability } from "./internal-capability.js";
 import { SerialEmitter as Emittery } from "./serial-emitter.js";
 import { CdpCommandTimeoutError, CdpPipeClosedError, CdpSessionDetachedError, CdpSessionCrashedError } from "./cdp-errors.js";
@@ -25,7 +26,7 @@ export class PipeCdpClient {
   #child;
   #writeStream;
   #readStream;
-  #buffer = Buffer.alloc(0);
+  #frames = new NulFrameReader();
   #seq = 1;
   #pending = new Map();
   #closedSessions = new Set();
@@ -101,7 +102,7 @@ export class PipeCdpClient {
     this.#launchedAt = performance.now();
     this.#receivedBytes = 0;
     this.#malformedFrameCount = 0;
-    this.#buffer = Buffer.alloc(0);
+    this.#frames = new NulFrameReader();
     this.#sessionTargets.clear();
     this.#closedSessions.clear();
     this.#child.once("exit", () => removeBrowserPidFile(profileDir, browserPid));
@@ -321,11 +322,7 @@ export class PipeCdpClient {
 
   #onData(chunk) {
     this.#receivedBytes += chunk.length;
-    this.#buffer = Buffer.concat([this.#buffer, chunk]);
-    let idx;
-    while ((idx = this.#buffer.indexOf(0)) !== -1) {
-      const raw = this.#buffer.subarray(0, idx).toString("utf8");
-      this.#buffer = this.#buffer.subarray(idx + 1);
+    for (const raw of this.#frames.push(chunk)) {
       if (raw.length === 0) continue;
       let msg;
       try { msg = JSON.parse(raw); } catch { this.#malformedFrameCount++; continue; }
