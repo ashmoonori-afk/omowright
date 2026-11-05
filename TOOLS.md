@@ -151,7 +151,21 @@ loop; the module files next to it are implementation detail.
   `emulate(page, nameOrPreset)`: set metrics, touch, and UA together;
   `emulate(page, null)` clears the override and restores the UA captured on the
   first call.
-- `createRoutes(page)`: request interception. `route(match, handler)`,
+- `page.route(urlGlobOrRegExpOrPredicate, handler, { times }?)`,
+  `page.unroute(url, handler?)`, `page.unrouteAll()`: request interception.
+  Strings match the whole URL: `*` excludes `/`, `**` crosses directories,
+  `{png,jpg}` matches alternatives, and `?` is literal. Predicates receive
+  a `URL`. The newest matching handler runs first; `route.fallback()` passes
+  to the next match, while `route.continue({ url, method, headers, postData })`
+  sends directly to the network. Handlers receive `(route, request)`;
+  `route.request()` returns that request, with `url()`, `method()`, `headers()`,
+  `postData()` and `resourceType()`. Respond with
+  `route.fulfill({ status, headers, contentType, body, json, path })` or
+  `route.abort(errorCode?)` (default `"failed"`, also `"blockedbyclient"`, etc.).
+  `times` limits matching invocations. Fetch stays off until registration and
+  is disabled after the last route is removed or exhausted. Page methods and
+  `createRoutes(page)` share one dispatcher; `unrouteAll()` clears both.
+- `createRoutes(page)`: legacy request interception. `route(match, handler)`,
   `unroute(match?)`, `dispose()`, `enabled`. `match` is a glob string (`*` and
   `?`; plain substring otherwise), a RegExp, or a predicate over
   `{ url, method, resourceType, headers }`. The handler receives `{ request,
