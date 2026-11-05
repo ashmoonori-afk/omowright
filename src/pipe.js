@@ -185,7 +185,12 @@ export class PipeCdpClient {
         lastError = error;
       }
       if (child.exitCode !== null || child.signalCode !== null) throw await this.#exitedBeforeReady(child, deadline);
-      await Promise.race([new Promise(resolve => setTimeout(resolve, 100)), exited]);
+      let timer;
+      try {
+        await Promise.race([new Promise(resolve => { timer = setTimeout(resolve, 100); }), exited]);
+      } finally {
+        clearTimeout(timer);
+      }
     }
     const reason = lastError ? String(lastError.message ?? lastError) : "no response";
     const tail = this.#stdioTail.trim();
@@ -297,10 +302,15 @@ export class PipeCdpClient {
       this.#connected = false;
       this.#failAll(Error("CDP pipe client closed"));
       if (child.exitCode === null) {
-        await Promise.race([
-          exited,
-          new Promise(resolve => setTimeout(resolve, GRACEFUL_CLOSE_TIMEOUT_MS)),
-        ]);
+        let timer;
+        try {
+          await Promise.race([
+            exited,
+            new Promise(resolve => { timer = setTimeout(resolve, GRACEFUL_CLOSE_TIMEOUT_MS); }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
       }
       await terminateChild(child, { quitRequested });
       return;

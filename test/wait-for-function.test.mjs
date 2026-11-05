@@ -4,6 +4,9 @@ import { mkdtempSync, existsSync, globSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { connectPipe, createAgentTabs, WaitForFunctionTimeoutError } from "../src/index.js";
 import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 
@@ -25,6 +28,14 @@ function findHeadlessShell() {
 
 const SHELL = process.env.SHELL_BIN ?? findHeadlessShell();
 const LIVE = { skip: !SHELL && "no chromium binary found", timeout: 60000 };
+
+// Contract (#191): deadlines are gone when their wait settles, including
+// rejection and browser teardown; successful return values alone miss leaks.
+test("settled waits and connection teardown leave no timers", LIVE, async () => {
+  await promisify(execFile)(process.execPath, [
+    fileURLToPath(new URL("./fixtures/wait-timer-teardown.mjs", import.meta.url)),
+  ], { env: { ...process.env, SHELL_BIN: SHELL }, timeout: 30000 });
+});
 
 const TEXT = "<p>A local page for the waitForFunction test, with enough text for the content readiness probe.</p>";
 // The page flips its own state on a timer. The first poll arms the timer, so every run sees the old state
