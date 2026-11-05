@@ -122,6 +122,14 @@ test("console events stream with type and text and respect page scope and off", 
     await page.evaluate("console.error('second')");
     assert.equal((await second).text(), "second");
     assert.deepEqual(messages, [["warning", "first 42"]]);
+    for (const predicate of [
+      message => message.type() === "error",
+      async message => message.type() === "error",
+    ]) {
+      const matching = page.waitForEvent("console", predicate);
+      await page.evaluate("console.log('skip'); console.error('matching')");
+      assert.equal((await matching).text(), "matching", "a bare predicate skips non-matching events");
+    }
     const onLoad = page.waitForEvent("console", { timeout: 5000 });
     await page.goto("data:text/html,<script>console.log('navigated')</script><p>ok</p>", { waitUntil: "load" });
     assert.equal((await onLoad).text(), "navigated");
