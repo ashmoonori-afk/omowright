@@ -408,6 +408,24 @@ const holderCases = [
     },
   },
   {
+    // #147: a listener that answers replaces the shared policy for that dialog only; once its
+    // handle closes, the listener is gone and the policy answers again. One answer per dialog.
+    label: "a dialog listener added through a handle answers instead of the policy until that handle closes",
+    async run({ fake, connectAs }) {
+      const listening = await connectAs();
+      await connectAs();
+      const answered = [];
+      listening.cdp.on("Page.javascriptDialogOpening", (_params, meta) => {
+        answered.push(meta.dialog.dismiss());
+      });
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [false]);
+      await Promise.all(answered);
+      await listening.close();
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [true]);
+      assert.deepEqual(fake.answers.map((a) => a.accept), [false, true]);
+    },
+  },
+  {
     label: "a property set or defined on a handle stays on that handle",
     async run({ connectAs }) {
       const writer = await connectAs();

@@ -86,7 +86,8 @@ Both are transport-level contracts documented once, in
 probe" and "Dialogs"). Short form: `goto` waits for meaningful content, not
 `readyState`, and times out after 30s on near-empty pages (`waitUntil: "commit"`
 is the escape hatch); every JavaScript dialog is auto-accepted unless a dialog
-policy says otherwise, and observable via `page.on("dialog")`.
+policy says otherwise, and observable via `page.on("dialog")`, where a listener
+can also answer it (`dialog.accept(text)` / `dialog.dismiss()`) instead of the policy.
 
 ## Errors worth knowing
 

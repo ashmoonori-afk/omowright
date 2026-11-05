@@ -9,7 +9,7 @@ import {
   writeBrowserPidFile,
 } from "./browser-process.js";
 import { BrowserConnection } from "./connection.js";
-import { normalizeDialogPolicy, resolveDialogAction } from "./dialog-policy.js";
+import { Dialog, answerWithPolicy, normalizeDialogPolicy } from "./dialog-policy.js";
 import { targetCreationCapability } from "./internal-capability.js";
 import { SerialEmitter as Emittery } from "./serial-emitter.js";
 
@@ -348,17 +348,15 @@ export class PipeCdpClient {
         this.#failCommands(CdpSessionCrashedError, "CDP session crashed", msg.sessionId);
         this.#sessionTargets.delete(msg.sessionId);
       }
-      const handled = msg.method === "Page.javascriptDialogOpening" && msg.sessionId
-        ? this.#handleJavaScriptDialog(msg).catch(() => {})
+      const meta = { sessionId: msg.sessionId };
+      if (msg.method === "Page.javascriptDialogOpening" && msg.sessionId) {
+        meta.dialog = new Dialog(msg.params, action => this.send("Page.handleJavaScriptDialog", action, msg.sessionId));
+      }
+      const emitted = this.#events.emit(msg.method, { data: { payload: msg.params, meta } }).catch(() => {});
+      return meta.dialog
+        ? emitted.then(() => answerWithPolicy(meta.dialog, this.#dialogPolicy, msg.params)).catch(() => {})
         : undefined;
-      this.#events.emit(msg.method, { data: { payload: msg.params, meta: { sessionId: msg.sessionId } } }).catch(() => {});
-      return handled;
     }
-  }
-
-  async #handleJavaScriptDialog(msg) {
-    const params = await resolveDialogAction(this.#dialogPolicy, msg.params);
-    await this.send("Page.handleJavaScriptDialog", params, msg.sessionId);
   }
 
   #commandError(ErrorType, reason, entry) {

@@ -249,9 +249,9 @@ loop; the module files next to it are implementation detail.
 
 ## Dialogs (alert / confirm / prompt / beforeunload)
 
-Every JavaScript dialog is **answered at the transport layer** by a dialog
-policy, so the page never hangs waiting for a human, including a click that
-triggers `window.print()`. The default policy accepts everything, which keeps
+Every JavaScript dialog is **answered at the transport layer**: by a `dialog`
+listener that answers it, otherwise by a dialog policy, so the page never hangs
+waiting for a human, including a click that triggers `window.print()`. The default policy accepts everything, which keeps
 the old behaviour: `alert()` returns immediately, `confirm()` returns `true`,
 `prompt()` returns `""`, `beforeunload` never blocks navigation, and dialogs
 during page load are handled the same way (`page.goto()` still completes because
@@ -279,8 +279,25 @@ browser.cdp.dialogPolicy;                         // read the current policy (cl
 - `connectPipe({ dialogPolicy })` and `connect(url, { dialogPolicy })` set it
   up front; `browser.setDialogPolicy()` swaps it later (it forwards to the pipe
   or WebSocket client and throws for a transport without policy support).
-- Subscribe to `page.on('dialog', d => ...)` for observability: the event
-  carries `{type, message, defaultPrompt, url}` and fires after the policy runs.
+- `page.on('dialog', dialog => ...)` hands each listener a Playwright-style
+  `Dialog`: `type()`, `message()`, `defaultValue()` (the prompt's default
+  text), `url`, `accept(promptText?)` and `dismiss()`. A listener that answers
+  replaces the policy for that dialog. The policy answers once the listeners
+  have run and none of them answered, so a listener that only looks (a trace,
+  `page.waitForEvent('dialog')`) leaves the dialog to the policy:
+
+  ```js
+  page.on("dialog", dialog =>
+    dialog.type() === "prompt" ? dialog.accept("agent@example.com") : dialog.dismiss());
+  ```
+
+  Answer inside the listener or in a promise it returns: the policy waits for
+  that promise. A dialog is answered once: a second `accept()` / `dismiss()`,
+  or one after the policy answered, rejects.
+- CDP listeners of `Page.javascriptDialogOpening` get the same `Dialog` as
+  `meta.dialog`. On a shared connection the policy is the connection's and a
+  listener belongs to the handle that added it: it answers until that handle
+  closes, then the policy answers again.
 
 ## Frames (OOPIF) and shadow DOM
 

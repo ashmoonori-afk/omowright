@@ -130,7 +130,9 @@ Preset and `TOOLS.md` paths are relative to the package root.
 - Dialogs never block: `alert/confirm/prompt/beforeunload` are answered by the
   dialog policy (default accept: `confirm() -> true`, `prompt() -> ""`). Change
   it with `connectPipe({ dialogPolicy })`, `connect(url, { dialogPolicy })` or `browser.setDialogPolicy()`;
-  observe with `page.on('dialog')`. Details in `TOOLS.md`.
+  observe with `page.on('dialog')`, or answer inline with
+  `page.on('dialog', d => d.accept(text))` (a listener's answer replaces the
+  policy). Details in `TOOLS.md`.
 - `goto` waits for meaningful content, not `readyState`: body plus (interactive
   elements OR landmarks OR >= 20 text chars). Near-empty pages time out — use
   `page.goto(url, { waitUntil: "commit" })` for those.
