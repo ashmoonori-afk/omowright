@@ -24,8 +24,13 @@ async function lockLinux(fd) {
     // close follows exit and drains stderr, so real utility errors are intact.
     child.once("close", (code, signal) => {
       if (code === 0) resolve(true);
-      else if (code === 1) resolve(false);
-      else reject(new Error(`instance lock flock failed (${signal ?? code}): ${stderr.trim()}`));
+      // util-linux and BusyBox are silent on EWOULDBLOCK. BusyBox also
+      // returns 1 for real errors, but prints their errno description.
+      else if (code === 1 && stderr.trim() === "") resolve(false);
+      else reject(Object.assign(
+        new Error(`instance lock flock failed (${signal ?? code}): ${stderr.trim()}`),
+        { code: "ERR_INSTANCE_LOCK" },
+      ));
     });
   });
 }

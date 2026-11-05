@@ -32,6 +32,7 @@ import { closeSync, openSync, writeSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { discoverLaunchedEndpoint, snapshotActivePort } from "../src/launch-endpoint.js";
 import { assertOwnerOnly } from "./fixtures/owner-only.mjs";
+import { tryAcquire } from "../src/lock-backend.js";
 
 const fixture = fileURLToPath(
   new URL("./fixtures/fake-named-browser.mjs", import.meta.url),
@@ -145,7 +146,7 @@ for (const crossRuntime of [false, true]) {
     } finally {
       await stopChild(holder?.child);
       await stopChild(waiter?.child);
-      if (decoyPort) await askDecoy(decoyPort, "stop");
+      if (decoyPort) await askDecoy(decoyPort, "stop").catch(() => {});
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -190,6 +191,33 @@ test("a held lock file cannot be deleted on Windows", { skip: process.platform !
   }
 });
 
+// Native Windows errors must not depend on thread-local GetLastError surviving
+// a round trip through JS. Exercise busy versus a real path error at the kernel
+// boundary, including after allocations/GC between separate lock attempts.
+test("Windows lock distinguishes sharing violations from path errors", { skip: process.platform !== "win32", timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "omowright-lock-"));
+  const lockPath = path.join(root, "native.flock");
+  const holder = await tryAcquire(lockPath);
+  try {
+    assert.ok(holder);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (process.versions.bun) Bun.gc(true);
+      assert.equal(await tryAcquire(lockPath), null);
+    }
+    await assert.rejects(tryAcquire(path.join(root, "missing", "native.flock")), (error) => {
+      // Node owns its libuv error mapping; Bun uses NTSTATUS from the call.
+      if (process.versions.bun) {
+        assert.equal(error.code, "ERR_INSTANCE_LOCK");
+        assert.match(error.message, /Windows error 3,/);
+      } else assert.equal(error.code, "ENOENT");
+      return true;
+    });
+  } finally {
+    await holder?.release();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 // The production boundary must reject a missing or ineffective Linux utility,
 // rather than enter an unprotected critical section. No injected backend.
 test("the lock refuses to run without a working flock", { skip: process.platform !== "linux", timeout: 30_000 }, async () => {
@@ -205,6 +233,19 @@ test("the lock refuses to run without a working flock", { skip: process.platform
     const ineffective = await startLockHolder(path.join(root, "ineffective.flock"), { env, args: ["--once"] }).closed;
     assert.equal(ineffective.code, 1);
     assert.match(ineffective.stderr, /not enforced/);
+    // BusyBox uses exit 1 for both contention (silent) and syscall failures.
+    await writeFile(path.join(bin, "flock"), "#!/bin/sh\nprintf 'flock: Bad file descriptor\\n' >&2\nexit 1\n", { mode: 0o700 });
+    const previousPath = process.env.PATH;
+    try {
+      process.env.PATH = bin;
+      await assert.rejects(tryAcquire(path.join(root, "broken.flock")), (error) => {
+        assert.equal(error.code, "ERR_INSTANCE_LOCK");
+        assert.match(error.message, /Bad file descriptor/);
+        return true;
+      });
+    } finally {
+      process.env.PATH = previousPath;
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -589,7 +630,7 @@ test("connectNamed relaunches when a reused pid leaves a refused endpoint", asyn
       await readFile(path.join(registryRoot, "reused.json"), "utf8"),
     );
     assert.equal(rewritten.pid, connection.browserProcess.pid);
-    // Registry hygiene: persistent .flock files are not stale or temp artifacts.
+    // Reject legacy .lock and temporary artifacts; permanent .flock files stay.
     const leftovers = (await readdir(registryRoot)).filter(
       (name) => name.endsWith(".lock") || name.endsWith(".tmp"),
     );
@@ -628,6 +669,29 @@ test("connectNamed rejects an alive holder whose endpoint hangs", async () => {
     );
   } finally {
     server.close();
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+// Time is the contract here: attach discovery must use the connection budget,
+// not the one-second listInstances health-check budget. A slow, healthy browser
+// must attach without launching a replacement; explicit probe overrides remain
+// covered by the hanging-holder test above.
+test("connectNamed waits for slow holder discovery within the connection budget", { timeout: 30_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  let launched;
+  let attached;
+  try {
+    launched = await connectNamed("slow", {
+      registryRoot, browserPath: process.execPath,
+      browserArgs: [fixture, "--fake-probe-delay=1200"],
+    });
+    attached = await connectNamed("slow", { registryRoot, connectTimeoutMs: 5_000 });
+    assert.equal(attached.browserProcess, undefined);
+    assert.deepEqual(await attached.listTargets(), [fakeTarget]);
+  } finally {
+    await attached?.close().catch(() => {});
+    await launched?.close().catch(() => {});
     await rm(registryRoot, { recursive: true, force: true });
   }
 });

@@ -22,15 +22,21 @@ const target = {
 const server = createServer((req, res) => {
   const port = server.address().port;
   if (req.url === "/json/version") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({
-        Browser: "FakeNamedBrowser/1.0",
-        "Protocol-Version": "1.3",
-        webSocketDebuggerUrl:
-          `ws://127.0.0.1:${port}/devtools/browser/fake`,
-      }),
-    );
+    // A bounded discovery latency exercises the caller's timeout contract.
+    const delay = Number(flag("fake-probe-delay") ?? 0);
+    const reply = () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          Browser: "FakeNamedBrowser/1.0",
+          "Protocol-Version": "1.3",
+          webSocketDebuggerUrl:
+            `ws://127.0.0.1:${port}/devtools/browser/fake`,
+        }),
+      );
+    };
+    if (delay) setTimeout(reply, delay);
+    else reply();
     return;
   }
   if (req.url === "/json/list") {
