@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { mkdtempSync, writeFileSync, readFileSync, statSync, rmSync, mkdirSync, symlinkSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, statSync, rmSync, mkdirSync, symlinkSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createNativeMessagingHost, encodeFrame, decodeFrames, installNativeMessagingHost, ExtensionHelloSchema, EventSchema, ResponseSchema, createChromeApi, BridgeProtocolError } from "../src/index.js";
 import { COMMAND_NAMES, EVENT_NAMES } from "../src/bridge-transport.js";
-import { isWin32RegistryKey, win32DirectoryChain, win32PathRisk } from "../src/native-host-win32.js";
+import { installWin32NativeHost, isWin32RegistryKey, win32DirectoryChain, win32PathRisk } from "../src/native-host-win32.js";
 import vm from "node:vm";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -99,10 +99,25 @@ test("registration rejects endpointPath, unsafe host names, and overwrites only 
     await installNativeMessagingHost(options); await assert.rejects(() => installNativeMessagingHost(options), /already exists/); await installNativeMessagingHost({ ...options, force: true });
     if (win32) {
       // the per-user registry value is only repointed at another manifest with force
-      const other = { ...options, nativeMessagingHostDir: path.join(root, "other-hosts") };
+      const other = { ...options, nativeMessagingHostDir: path.join(root, "other", "hosts") };
       await assert.rejects(() => installNativeMessagingHost(other), /already points at/);
+      // the refusal comes after this call created other\hosts, and it removes both directories it made
+      assert.equal(existsSync(path.join(root, "other")), false);
       const moved = await installNativeMessagingHost({ ...other, force: true }); assert.equal(registryDefault(moved.registryKey), moved.path);
     }
+  } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
+});
+
+// Platform contract: a failing install removes only what it created. Call A creates the new directory; a second install
+// into it registers before A writes, so A fails like the shared writer does and must leave the other's manifest alone.
+test("a failed win32 install never removes a concurrent install's manifest", { ...registrationTimeout, skip: !win32 }, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-race-")); const executable = hostExecutable(root); const dir = path.join(root, "new", "hosts"); const registry = testRegistry();
+  const options = { hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options };
+  try {
+    let winner;
+    const writeManifest = async file => { winner = await installNativeMessagingHost(options); if (existsSync(file)) throw new Error("registration manifest already exists; use force"); };
+    await assert.rejects(() => installWin32NativeHost({ hostName: "com.omowright.cloakbridge", hostPath: executable, dir, registryKey: registry.options.registryKey, force: false, writeManifest }), /already exists/);
+    assert.equal(registryDefault(winner.registryKey), winner.path); assert.equal(existsSync(winner.path), true, "the winner's registered manifest was removed");
   } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });
 
