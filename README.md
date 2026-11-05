@@ -113,7 +113,10 @@ sleep to tune.
   endpoint) when it is unresponsive; an attach requires the endpoint to answer
   with the browser GUID recorded at launch, so a reused pid on a rebound port is
   relaunched rather than driven. `listInstances()` lists every registered
-  instance with liveness.
+  instance with liveness. The registry directory is owner-only (mode `0700`; on
+  Windows a protected ACL), so on Windows it must live on a volume with ACLs:
+  on FAT32, exFAT or a share without ACLs `connectNamed` throws instead of
+  leaving the registry open.
 - **Shared attaches.** Chrome asks the user to allow remote debugging once per
   connection to their own profile, so `connect(url)` and `connectNamed`
   attaches in one process share one CDP connection per browser (keyed by its
@@ -205,8 +208,8 @@ ship as the `toolSchemas` export.
 For long-lived authenticated work, use `connectCloakProfile()` or the bundled
 `omowright-cloak` launcher. The first run stores a random fingerprint seed in
 `.omowright-cloak.json` (mode `0600`) inside the private profile (mode `0700`;
-on Windows, an ACL that grants only the current user and the system's
-administrators);
+on Windows, a protected ACL that grants only the current user, plus SYSTEM and
+Administrators, Windows' root equivalents, where Windows put them);
 later runs reuse it and reject a conflicting seed. Never copy Google or
 1Password cookies between profiles. Full lifecycle:
 [`docs/cloakbrowser-persistent-profile.md`](docs/cloakbrowser-persistent-profile.md).
