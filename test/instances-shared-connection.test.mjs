@@ -407,6 +407,27 @@ const holderCases = [
       assert.deepEqual(heard, ["other"]);
     },
   },
+  // #140: each handle's registration is its own entry, even for one function,
+  // so one holder unsubscribing or closing never removes another holder's.
+  ...[
+    { how: "unsubscribes", remove: (_handle, unsubscribe) => unsubscribe() },
+    { how: "closes", remove: (handle) => handle.close() },
+  ].map(({ how, remove }) => ({
+    label: `a handle that ${how} leaves another handle's registration of the same transport listener`,
+    async run({ fake, connectAs }) {
+      const removing = await connectAs();
+      const other = await connectAs();
+      const heard = [];
+      const listener = () => heard.push("heard");
+      const unsubscribe = removing.cdp.transportEvents.on("disconnected", listener);
+      other.cdp.transportEvents.on("disconnected", listener);
+      await remove(removing, unsubscribe);
+      const dropped = nextTransportEvent(other, "disconnected");
+      fake.dropConnections();
+      await dropped;
+      assert.deepEqual(heard, ["heard"]);
+    },
+  })),
   {
     // #147: a listener that answers replaces the shared policy for that dialog only; once its
     // handle closes, the listener is gone and the policy answers again. One answer per dialog.
