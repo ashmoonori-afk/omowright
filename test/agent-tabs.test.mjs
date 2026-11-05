@@ -6,7 +6,7 @@ import { BrowserConnection } from "../src/connection.js";
 class Emitter { constructor() { this.map = new Map(); } on(n, f) { const s = this.map.get(n) ?? new Set(); s.add(f); this.map.set(n, s); return () => s.delete(f); } emit(n, p, m = {}) { for (const f of [...this.map.get(n) ?? []]) f(p, m); } }
 function connection({ headless = true, send = null } = {}) {
   const calls = []; const cdp = { calls, isHeadless: headless, transportEvents: new Emitter(), on: (n, f) => cdp.events.on(n, f), events: new Emitter(), ensureConnected: async () => {}, send: send ?? (async (method, params, sessionId, options) => { calls.push({ method, params, sessionId, options }); if (method === "Target.createTarget") return { targetId: "owned" }; return {}; }) }; 
-  const page = { targetId: "owned", cdp, events: new Emitter(), resolveSessionId: async () => "session", setCachedViewportSize(size) { this.viewport = size; }, on(name, fn) { return this.events.on(name, fn); }, async dispose() {} };
+  const page = { targetId: "owned", cdp, events: new Emitter(), resolveSessionId: async () => "session", setCachedViewportSize(size) { this.viewport = size; }, on(name, fn) { return this.events.on(name, fn); }, async goto(url) { calls.push({ method: "goto", url }); }, async dispose() {} };
   return { cdp, page, attachPage: async () => { calls.push({ method: "attachPage" }); return page; } };
 }
 test("creates owned background tab and repins after main navigation", async () => {
