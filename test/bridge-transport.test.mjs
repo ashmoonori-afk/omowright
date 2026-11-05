@@ -86,6 +86,61 @@ test("registration follows the root-owned macOS /tmp alias", { ...registrationTi
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// Exercise the registration boundary with Darwin semantics on every runner, without changing system aliases.
+// Filesystem mocks only supply component metadata and syscall failures; the production walker decides trust.
+for (const name of ["tmp", "var", "etc"]) {
+  for (const scenario of ["basename lookalike", "readlink ENOENT", "realpath ENOENT", "realpath ELOOP"]) {
+    test(`registration under Darwin semantics rejects ${name}: ${scenario}`, () => {
+      const script = `
+        import assert from "node:assert/strict";
+        import fs from "node:fs/promises";
+        import path from "node:path";
+        import { syncBuiltinESMExports } from "node:module";
+        const component = ${JSON.stringify(scenario === "basename lookalike" ? `/some/dir/${name}` : `/${name}`)};
+        const scenario = ${JSON.stringify(scenario)};
+        const original = { ...fs };
+        const mocks = {
+          ...original,
+          async lstat(file) {
+            if (file === "/host") return { isFile: () => true, isSymbolicLink: () => false, uid: process.getuid?.(), mode: 0o700 };
+            if (file === component) return { isSymbolicLink: () => true, uid: 0 };
+            if (file === "/some" || file === "/some/dir") return { isSymbolicLink: () => false, isDirectory: () => true, uid: 0, mode: 0o755 };
+            return original.lstat(file);
+          },
+          async readlink(file) {
+            assert.equal(file, component);
+            if (scenario === "basename lookalike") assert.fail("basename lookalike reached alias resolution");
+            if (scenario === "readlink ENOENT") throw Object.assign(new Error("missing alias"), { code: "ENOENT" });
+            return "/private/${name}";
+          },
+          async realpath(file) {
+            assert.equal(file, component);
+            throw Object.assign(new Error("unresolvable alias"), { code: scenario.split(" ")[1] });
+          },
+        };
+        if (process.versions.bun) {
+          const { mock } = await import("bun:test");
+          mock.module("node:fs/promises", () => mocks);
+          mock.module("node:path", () => ({ ...path.posix, default: path.posix }));
+        } else {
+          Object.assign(fs, mocks);
+          Object.assign(path, path.posix);
+          syncBuiltinESMExports();
+        }
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        const { installNativeMessagingHost, BridgeProtocolError } = await import(${JSON.stringify(new URL("../src/bridge-transport.js", import.meta.url).href)});
+        await assert.rejects(
+          () => installNativeMessagingHost({ hostPath: "/host", extensionId: "${extensionId}", nativeMessagingHostDir: component + "/hosts" }),
+          error => error instanceof BridgeProtocolError && error.message.includes(component) &&
+            (scenario === "basename lookalike" ? /symlink/.test(error.message) : error.message.includes(scenario.split(" ")[1])),
+        );
+      `;
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 30_000 });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+    });
+  }
+}
+
 test("chrome API routes negotiated writes and preserves unsupported fallback", async () => {
   const calls = []; const bridge = { isConnected: true, capabilities: { commands: new Set(["bookmarks.create"]), events: new Set() }, request: async (...args) => { calls.push(args); return { id: "2", title: "x" }; } };
   const chrome = createChromeApi({}, { bridge }); assert.deepEqual(await chrome.bookmarks.create({ title: "x" }), { id: "2", title: "x" }); assert.deepEqual(calls[0], ["bookmarks.create", { details: { title: "x" }}]); await assert.rejects(() => chrome.history.deleteUrl({ url: "https://x.test/" }), /requires the extension bridge/);
@@ -172,6 +227,7 @@ test("registration rejects writable or symlinked directory components", registra
     if (win32) setEveryoneModify(parent, true); else chmodSync(parent, 0o777);
     await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options }), win32 ? /security rejected/ : error => error instanceof BridgeProtocolError && error.message.includes(parent) && /security rejected.*writable by others/.test(error.message));
     if (win32) setEveryoneModify(parent, false); else chmodSync(parent, 0o700);
+    // This real-filesystem case proves platform rejection off Darwin; the table above proves exact paths.
     for (const name of ["linked", "tmp", "var", "etc"]) {
       const linked = path.join(root, name); symlinkSync(parent, linked, win32 ? "junction" : undefined);
       await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linked, "hosts"), ...registry.options }), win32 ? /security rejected/ : error => error instanceof BridgeProtocolError && error.message.includes(linked) && /security rejected.*symlink/.test(error.message));
