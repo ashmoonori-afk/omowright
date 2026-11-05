@@ -43,14 +43,18 @@ export class AgentTabManager {
     // Its own window doesn't take focus from the user's tab, and the tab renders
     // (verified headed on Linux and macOS).
     const result = await this.#connection.cdp.send("Target.createTarget", {
-      url, background: true, newWindow: true,
+      url: "about:blank", background: true, newWindow: true,
       ...(options.browserContextId ? { browserContextId: options.browserContextId } : {}),
     }, undefined, { capability: CAPABILITY });
     const targetId = result.targetId;
     // CloakBrowser headless defers renderer startup for background targets until
     // activation; activating before attach avoids Page.enable timing out.
     if (await this.#isHeadless()) await this.#connection.cdp.send("Target.activateTarget", { targetId });
-    return this.adopt(targetId, { viewport });
+    // Finish session/domain setup on a stable document before starting a
+    // navigation that can replace the renderer or its execution contexts.
+    const tab = await this.adopt(targetId, { viewport });
+    if (url !== "about:blank") await tab.page.goto(url);
+    return tab;
   }
 
   async adopt(targetId, options = {}) {
