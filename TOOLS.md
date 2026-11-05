@@ -16,6 +16,15 @@ running Chromium DevTools endpoint).
 - `listTargets()` — list open tabs (id, type, url, title).
 - `attachPage(targetId)` — attach an existing tab.
 - `page.goto(url)` — navigate; resolves when interactive.
+- `page.waitForURL(url, { timeout?, waitUntil? })` — wait until the page URL
+  matches a Playwright glob (`**` crosses `/`, `*` does not, `{a,b}` is a
+  choice, `?` is a literal question mark), a RegExp, or a predicate
+  `(url: URL) => boolean`. With `waitUntil` it then waits for that load state;
+  without it, it returns as soon as the URL matches.
+- `page.waitForLoadState(state, { timeout? })` — `domcontentloaded` and `load`
+  wait for those document events; `networkidle` waits until no request has been
+  in flight for 500 ms (requests already running when the wait starts are not
+  seen); `interactive` (default) and `stable` use the `goto` readiness probe.
 - `page.snapshot(options?)` — PRIMARY read. Returns `{tree, refs}`; tree lines
   look like `- link "Learn more" [ref=e1]`. Options: `maxDepth` (50),
   `maxChars`, `interactive`, `showHidden`, `selector`, `ref`.
