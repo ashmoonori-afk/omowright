@@ -101,9 +101,15 @@ loop; the module files next to it are implementation detail.
   `setDialogPolicy` throws `SharedConnectionError` (`error.code ===
   "shared_connection"`; pass `dialogPolicy` when attaching instead), a sole holder's `setDialogPolicy` works and that
   connection is never shared again, properties set on a handle stay on it,
-  the shared client can't be written through it, and listeners added through
-  `handle.cdp` are removed by that handle's `close()`. `setDialogPolicy(undefined)`
-  resets to the default (accept every dialog).
+  writing or defining `cdp`, `close` or `setDialogPolicy` on a handle throws
+  `TypeError`, the shared client can't be written through it, and listeners
+  added through `handle.cdp` are removed by that handle's `close()`.
+  `handle.cdp.transportEvents.clearListeners()` removes only that handle's
+  transport listeners, and `handle.cdp.transportEvents.emit()` throws
+  `TypeError`. The connection keeps a frozen copy of the options it was
+  attached with, so mutating your options object after attaching changes
+  nothing. `setDialogPolicy(undefined)` resets to the default (accept every
+  dialog).
   `listInstances()` returns every record (`{ name, pid, endpoint,
   webSocketDebuggerUrl, profileDir, browserPath, startedAt }`) with `alive` /
   `responsive` liveness.
