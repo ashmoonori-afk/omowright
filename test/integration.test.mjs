@@ -25,22 +25,13 @@ const SHELL = process.env.SHELL_BIN ?? findHeadlessShell();
 
 function findFfmpeg() {
   const binary = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
-  const cachedBinary = process.platform === "win32" ? "ffmpeg-win64.exe"
-    : process.platform === "darwin" ? "ffmpeg-mac" : "ffmpeg-linux";
-  const home = process.env.HOME ?? process.env.USERPROFILE;
-  const caches = [
-    path.join(home, ".cache/ms-playwright"),
-    path.join(home, "Library/Caches/ms-playwright"),
-    ...(process.env.LOCALAPPDATA ? [path.join(process.env.LOCALAPPDATA, "ms-playwright")] : []),
-  ];
-  const candidates = [
-    ...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map(dir => path.join(dir, binary)),
-    ...caches.flatMap(dir => globSync(path.join(dir, "ffmpeg-*", cachedBinary)).sort().reverse()),
-  ];
+  const candidates = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map(dir => path.join(dir, binary));
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
     const { status, stdout } = spawnSync(candidate, ["-hide_banner", "-encoders"], { encoding: "utf8", timeout: 5000 });
-    if (status === 0 && /^\s*V\S*\s+libvpx\s/m.test(stdout)) return candidate;
+    if (status !== 0 || !/^\s*V\S*\s+libvpx\s/m.test(stdout)) continue;
+    const muxers = spawnSync(candidate, ["-hide_banner", "-muxers"], { encoding: "utf8", timeout: 5000 });
+    if (muxers.status === 0 && /^\s*E\s+null\s/m.test(muxers.stdout)) return candidate;
   }
   return null;
 }
@@ -66,7 +57,7 @@ for (const mode of ["missing", "early-exit"]) {
 // The package entry must finalize real screencast frames into a decodable clip.
 // Dangling bundled imports or missing encoder process helpers break this boundary.
 test("page video start and stop write a playable clip through the package entry", {
-  skip: !SHELL ? "no chromium binary found" : !FFMPEG && "no ffmpeg with the libvpx encoder found on PATH or in the Playwright cache",
+  skip: !SHELL ? "no chromium binary found" : !FFMPEG && "no ffmpeg on PATH with the libvpx encoder and null muxer",
   timeout: 60000,
 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-video-"));
@@ -77,8 +68,7 @@ test("page video start and stop write a playable clip through the package entry"
   });
   const originalPath = process.env.PATH;
   try {
-    // Playwright names its encoder ffmpeg-linux/mac/win64.exe; give the real
-    // recorder's bare `ffmpeg` command that binary without a production seam.
+    // Make the recorder's bare `ffmpeg` command use the qualified PATH binary.
     const encoderDir = path.join(ud, "encoder");
     mkdirSync(encoderDir);
     copyFileSync(FFMPEG, path.join(encoderDir, process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"));
