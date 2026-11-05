@@ -115,7 +115,15 @@ test("interactive snapshots keep clickable generic tiles whose parent is only a 
     const refLines = snap.tree.split("\n").filter((line) => /ref=e\d+/.test(line));
     assert.ok(refLines.some((line) => line.includes("Card tile")), `the tile keeps a ref: ${refLines.join(" | ")}`);
     assert.ok(refLines.some((line) => line.includes("Focusable tile")), "the focusable tile keeps a ref");
-    const cssPaths = Object.values(snap.css).filter(Boolean);
-    assert.ok(cssPaths.some((p) => /#card-tile|pointer-generics/.test(p)), `the tile keeps a css path usable for a click: ${cssPaths.join(" , ")}`);
+    const refOf = (label) => {
+      const line = snap.tree.split("\n").find((candidate) => candidate.includes(label));
+      assert.ok(line, `tree has a line for ${label}`);
+      const match = line.match(/ref=(e\d+)/);
+      assert.ok(match, `${label} line carries a ref: ${line}`);
+      return match[1];
+    };
+    assert.match(snap.css[refOf("Card tile")] ?? "", /#card-tile/, "the Card tile ref has its own css path (a click needs it)");
+    const svgRefLine = snap.tree.split("\n").find((line) => line.includes("SVG tile"));
+    assert.ok(svgRefLine, "the svg-child tile keeps its label");
   });
 });
