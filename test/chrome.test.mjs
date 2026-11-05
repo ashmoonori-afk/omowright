@@ -98,6 +98,11 @@ test("chrome.tabs and chrome.windows expose CDP target and window state", { skip
     const wins = await chrome.windows.getAll({ populate: true });
     assert.equal(wins.length, 1);
     assert.ok(wins[0].tabs.some(item => item.url.includes("example.com")));
+    // #122 (public API contract): CDP has no window-focus state and document.hasFocus()
+    // is forced true by the focus emulation OmOWright enables on attach, so the only
+    // window here (a background agent window) must not be reported as focused.
+    assert.ok(wins.every(win => !("focused" in win)), "windows carry no guessed focused flag");
+    await assert.rejects(() => chrome.windows.getLastFocused(), UnsupportedOperationError);
     const current = await chrome.windows.getCurrent();
     assert.equal(current.id, wins[0].id);
     const single = await chrome.windows.get(wins[0].id);

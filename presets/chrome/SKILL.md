@@ -38,13 +38,17 @@ Tab lifecycle stays on `connection.newTab(url)` / `page.close()`; interaction on
 
 ## windows — CDP `Browser.getWindowForTarget`
 
-`get(windowId, queryOptions?)`, `getCurrent(queryOptions?)`,
-`getLastFocused(queryOptions?)`, `getAll(queryOptions?)`.
+`get(windowId, queryOptions?)`, `getCurrent(queryOptions?)`, `getAll(queryOptions?)`.
 
 - `queryOptions: { populate?: boolean }` — `populate: true` adds a `tabs` array.
-- Returns `{ id, focused, type, state, alwaysOnTop, incognito, tabs? }`.
-- Headless sessions have exactly one window; `getCurrent`/`getLastFocused` return
-  the first.
+- Returns `{ id, type, state, alwaysOnTop, incognito, tabs? }`. **THERE IS NO
+  `focused` FIELD**: CDP exposes no window focus state, and `document.hasFocus()`
+  is true in every page OmOWright attaches to (it enables focus emulation),
+  background agent windows included.
+- `getLastFocused()` throws `UnsupportedOperationError` for the same reason. With
+  the extension bridge, follow `chrome.windows.onFocusChanged` instead.
+- `getCurrent` returns the first window; it does not tell you where the user is
+  working.
 
 ## bookmarks — profile `Bookmarks` JSON, read-only
 
