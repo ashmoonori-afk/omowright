@@ -36,7 +36,7 @@ async function isAbandoned(state, staleGraceMs, startTimeOf) {
   if (state.pid === null) return Date.now() - state.mtimeMs >= staleGraceMs;
   if (!isPidAlive(state.pid)) return true;
   if (state.start === null) return false;
-  const start = await startTimeOf(state.pid);
+  const start = await startTimeOf(state.pid, state.start);
   return start !== null && start !== state.start;
 }
 
@@ -160,16 +160,20 @@ async function acquireLock(lockPath, timeoutMs, staleGraceMs, lookupStartTime) {
   const deadline = Date.now() + timeoutMs;
   // A live holder's start time cannot change while we wait, and on Windows each
   // lookup is a PowerShell call of about a second, so one acquire looks each
-  // holder pid up once. A holder that dies is still caught by isPidAlive; only
-  // a pid reused within one wait pass escapes it, and the wait then times out.
+  // holder up once. A holder is its pid AND the start time its lock records:
+  // keyed by pid alone, a lookup made for one holder would be compared with
+  // the lock of a later process that reused its pid, and that live lock would
+  // be reclaimed. A holder that dies is still caught by isPidAlive; only a pid
+  // reused within one wait pass escapes it, and the wait then times out.
   const startTimes = new Map();
-  const startTimeOf = async (pid) => {
-    if (!startTimes.has(pid)) {
+  const startTimeOf = async (pid, recordedStart) => {
+    const key = `${pid}:${recordedStart}`;
+    if (!startTimes.has(key)) {
       const start = await lookupStartTime(pid);
       if (start === null) return null;
-      startTimes.set(pid, start);
+      startTimes.set(key, start);
     }
-    return startTimes.get(pid);
+    return startTimes.get(key);
   };
   let holderPid = null;
   for (;;) {
@@ -214,7 +218,8 @@ async function acquireLocalLock(key) {
 
 // Runs `run` while this process and every other one agree we hold `lockPath`.
 // A lock with no readable identity counts as held until it is `staleGraceMs` old.
-// `startTimeOf` lets a test count start-time lookups; production callers pass none.
+// `startTimeOf` lets a test count start-time lookups and stand in for a reused
+// pid; production callers pass none.
 export async function withLock(lockPath, { timeoutMs, staleGraceMs, startTimeOf = processStartTime }, run) {
   const releaseLocal = await acquireLocalLock(lockPath);
   try {
