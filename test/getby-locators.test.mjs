@@ -44,6 +44,7 @@ const markup = (prefix) => `
   <div id="${prefix}row-2" data-testid="row-2">row two</div>
   <abbr id="${prefix}issues" title="issues">I</abbr>
   <img id="${prefix}logo" alt="logo" width="10" height="10">
+  <label for="${prefix}scoped-contact">Scoped Contact</label><input id="${prefix}scoped-contact">
 </form>
 <div id="${prefix}shadow-host"><template shadowrootmode="open">
   <input id="${prefix}shadow-field" placeholder="Shadow field">
@@ -94,6 +95,7 @@ const CHAINED = [
   ["getByTestId", /^row/, ["row-2"]],
   ["getByTitle", "issues", ["issues"]],
   ["getByAltText", "logo", ["logo"]],
+  ["getByLabel", "SCOPED contact", ["scoped-contact"]],
 ];
 
 async function launch() {
@@ -165,6 +167,103 @@ test("getByPlaceholder/TestId/Title/AltText/Label match like Playwright on page,
       selectors.setTestIdAttribute("data-testid");
     }
     assert.deepEqual(await idsOf(page.getByTestId("row")), ["p-row"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+// #219/#197/#202: real DOM tables protect matching and naming, not selector spelling.
+// The existing attribute table does not exercise text normalization, name precedence or chained labels.
+// A case-sensitive substring, textContent-based name, or missing scoped getter fails here without a test seam.
+const textMarkup = (prefix) => `
+<section id="${prefix}scope">
+  <div id="${prefix}text">  Submit \n Order\u200b\u00ad </div>
+  <div id="${prefix}text-long">Submit Order now</div>
+  <div id="${prefix}raw">Raw\n  spacing</div>
+  <div id="${prefix}clean">Clean<script type="application/json">ScriptOnly</script><style>StyleOnly{}</style><template>TemplateOnly</template><noscript>NoscriptOnly</noscript></div>
+  <button id="${prefix}button">  Send \n Order<span style="display:none">DisplaySecret</span><span aria-hidden="true">AriaSecret</span><span style="visibility:hidden">VisibilitySecret</span><script type="application/json">ScriptSecret</script></button>
+  <button id="${prefix}long-button">Send Order now</button>
+  <span id="${prefix}ref" hidden>Referenced Name</span>
+  <button id="${prefix}referenced" aria-labelledby="${prefix}ref" aria-label="Wrong aria" title="Wrong title">Wrong content</button>
+  <button id="${prefix}aria" aria-label="Aria Name" title="Wrong title">Wrong content</button>
+  <button id="${prefix}invalid-ref" aria-labelledby="missing" aria-label="Fallback Name">Wrong content</button>
+  <button id="${prefix}content" title="Wrong title">Content Name</button>
+  <button id="${prefix}title" title="Title Name"></button>
+  <button id="${prefix}nested"><img alt="Nested Image"> Name</button>
+  <button id="${prefix}untruncated">${"Long ".repeat(25)}End</button>
+  <label for="${prefix}native"> Native \n Label<span hidden>HiddenLabel</span></label><input id="${prefix}native" title="Wrong title">
+  <label for="${prefix}label"> Customer \n Email </label><input id="${prefix}label">
+  <label for="${prefix}label-long">Customer Email address</label><input id="${prefix}label-long">
+  <input id="${prefix}aria-field" aria-label="Account Name">
+  <span id="${prefix}field-ref">Account Reference</span><input id="${prefix}ref-field" aria-labelledby="${prefix}field-ref" aria-label="Wrong label">
+  <img id="${prefix}image" alt="Image Name" title="Wrong title">
+  <input id="${prefix}submit" type="submit" value="Native Submit">
+  <div><template shadowrootmode="open"><button id="${prefix}shadow">Shadow <span hidden>Secret</span> Name</button><label for="${prefix}shadow-field">Shadow Label</label><input id="${prefix}shadow-field"></template></div>
+</section>
+<input id="${prefix}outside" aria-label="Account Name">
+<p>Enough visible text for the readiness probe to accept this document.</p>`;
+
+const TEXT_CASES = [
+  ["getByText", ["submit order"], ["text", "text-long"]],
+  ["getByText", [" \nSubmit   Order ", { exact: true }], ["text"]],
+  ["getByText", ["submit order", { exact: true }], []],
+  ["getByText", [/^Submit.*Order$/], []],
+  ["getByText", [/^Raw\n  spacing$/g], ["raw"]],
+  ["getByText", [/^(ScriptOnly|StyleOnly|TemplateOnly|NoscriptOnly)/], []],
+  ["getByText", ["Only"], []],
+  ["getByText", ["Clean", { exact: true }], ["clean"]],
+  ["getByRole", ["button", { name: "send order" }], ["button", "long-button"]],
+  ["getByRole", ["button", { name: " \nSend  Order ", exact: true }], ["button"]],
+  ["getByRole", ["button", { name: "send order", exact: true }], []],
+  ["getByRole", ["button", { name: /^Send Order$/g }], ["button"]],
+  ["getByRole", ["button", { name: /Secret/ }], []],
+  ["getByRole", ["button", { name: "Referenced Name", exact: true }], ["referenced"]],
+  ["getByRole", ["button", { name: "Aria Name", exact: true }], ["aria"]],
+  ["getByRole", ["button", { name: "Fallback Name", exact: true }], ["invalid-ref"]],
+  ["getByRole", ["button", { name: "Content Name", exact: true }], ["content"]],
+  ["getByRole", ["button", { name: "Title Name", exact: true }], ["title"]],
+  ["getByRole", ["button", { name: "Nested Image Name", exact: true }], ["nested"]],
+  ["getByRole", ["button", { name: /End$/ }], ["untruncated"]],
+  ["getByRole", ["textbox", { name: "Native Label", exact: true }], ["native"]],
+  ["getByRole", ["img", { name: "Image Name", exact: true }], ["image"]],
+  ["getByRole", ["button", { name: "Native Submit", exact: true }], ["submit"]],
+  ["getByRole", ["button", { name: "Shadow Name", exact: true }], ["shadow"]],
+  ["getByLabel", ["customer email"], ["label", "label-long"]],
+  ["getByLabel", [" Customer   Email ", { exact: true }], ["label"]],
+  ["getByLabel", ["customer email", { exact: true }], []],
+  ["getByLabel", [/Customer\s+Email/g], ["label", "label-long"]],
+  ["getByLabel", ["ACCOUNT name"], ["aria-field", "outside"]],
+  ["getByLabel", ["account reference"], ["ref-field"]],
+  ["getByLabel", ["Wrong label"], []],
+  ["getByLabel", ["shadow label"], ["shadow-field"]],
+];
+
+test("text and accessible-name tables on page, frame, frame locator and locator", { skip: !SHELL && "no chromium binary found", timeout: 120000 }, async (t) => {
+  const { connection, cleanup } = await launch();
+  try {
+    const page = (await createAgentTabs(connection).create("about:blank")).page;
+    await page.goto(`data:text/html;charset=utf-8,${encodeURIComponent(`<!DOCTYPE html><body>${textMarkup("p-")}<iframe name="matching" srcdoc="${textMarkup("f-").replaceAll('"', "&quot;")}"></iframe>`)}`);
+    const frameLocator = page.frameLocator("iframe");
+    await frameLocator.locator("#f-scope").waitFor();
+    const frame = page.frames().find((candidate) => candidate.name() === "matching");
+    assert.ok(frame);
+    for (const [name, container, prefix] of [["page", page, "p-"], ["frame", frame, "f-"], ["frame locator", frameLocator, "f-"], ["locator", page.locator("#p-scope"), "p-"]]) {
+      for (const getter of ["getByText", "getByRole", "getByLabel"]) {
+        await t.test(`${name}.${getter}`, async () => {
+          for (const [method, args, expected] of TEXT_CASES.filter(([method]) => method === getter)) {
+            const scopedExpected = name === "locator" ? expected.filter((id) => id !== "outside") : expected;
+            const locator = container[method](...args);
+            const count = await locator.count();
+            const ids = [];
+            for (let index = 0; index < count; index++) ids.push(await locator.nth(index).getAttribute("id"));
+            // Role locators intentionally search descendant frames in OmOWright.
+            const expectedIds = scopedExpected.map((id) => prefix + id);
+            if (name === "page" && method === "getByRole") expectedIds.push(...expected.map((id) => "f-" + id));
+            assert.deepEqual(ids, expectedIds, `${name}.${method}(${args})`);
+          }
+        });
+      }
+    }
   } finally {
     await cleanup();
   }
