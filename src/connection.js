@@ -8,6 +8,7 @@ import {
 } from "./core.js";
 import { acquireSharedConnection, canShareConnection } from "./shared-connections.js";
 import { createAgentTabs, getAgentTabs } from "./agent-tabs.js";
+import { BrowserContext } from "./browser-context.js";
 
 export class TabRepository {
   #client;
@@ -19,6 +20,7 @@ export class BrowserConnection {
   #client;
   #sessions;
   #pages = new Map();
+  #contexts = new Map();
   #storageRoot;
   #popups = new Map();
   #popupTargets = new Map();
@@ -112,6 +114,13 @@ export class BrowserConnection {
     const entry = { frames, page: null };
     const host = this.#createPageHost(targetId, entry);
     const page = new OmOPage(this.#client, frames, targetId, sessionId, host);
+    const { targetInfo } = await this.#client.send("Target.getTargetInfo", { targetId });
+    const contextId = targetInfo.browserContextId;
+    if (!this.#contexts.has(contextId)) this.#contexts.set(contextId, new BrowserContext(this, contextId));
+    const context = this.#contexts.get(contextId);
+    page.context = () => context;
+    for (const frame of frames.frames.values()) context.trackOrigin(frame.url);
+    page.on("framenavigated", frame => context.trackOrigin(frame.url));
     entry.page = page;
     this.#pages.set(targetId, entry);
     return page;
