@@ -26,6 +26,11 @@ export class PipeCdpClient {
   #buffer = Buffer.alloc(0);
   #seq = 1;
   #pending = new Map();
+  #sessionTargets = new Map();
+  #launchId;
+  #launchedAt = 0;
+  #receivedBytes = 0;
+  #malformedFrameCount = 0;
   #events = new Emittery();
   #connected = false;
   #commandTimeoutMs;
@@ -75,6 +80,12 @@ export class PipeCdpClient {
       stdio,
     });
     const browserPid = this.#child.pid;
+    this.#launchId = `${this.logId}:${browserPid}`;
+    this.#launchedAt = performance.now();
+    this.#receivedBytes = 0;
+    this.#malformedFrameCount = 0;
+    this.#buffer = Buffer.alloc(0);
+    this.#sessionTargets.clear();
     this.#child.once("exit", () => removeBrowserPidFile(profileDir, browserPid));
     this.#stdioTail = "";
     this.#stderrHead = "";
@@ -91,6 +102,9 @@ export class PipeCdpClient {
     this.#writeStream = this.#child.stdio[3];
     this.#readStream = this.#child.stdio[4];
     this.#readStream.on("data", chunk => this.#onData(chunk));
+    for (const event of ["end", "close"]) {
+      this.#readStream.on(event, () => this.#failCommands("CdpPipeClosedError", `CDP pipe read stream ${event}`));
+    }
     // A killed browser resets its end of the CDP pipes (ECONNRESET/EPIPE on Linux);
     // without a listener Node rethrows that as an uncaught exception in the caller.
     for (const stream of [this.#writeStream, this.#readStream]) {
@@ -194,12 +208,22 @@ export class PipeCdpClient {
     const msg = { id, method };
     if (params !== undefined) msg.params = params;
     if (sessionId) msg.sessionId = sessionId;
+    const entry = {
+      method, sessionId, targetId: params?.targetId ?? this.#sessionTargets.get(sessionId),
+      sentAt: performance.now(), receivedBytes: this.#receivedBytes,
+    };
+    if (this.#readStream.readableEnded || this.#readStream.destroyed) {
+      throw this.#commandError("CdpPipeClosedError", "CDP pipe read stream closed", entry);
+    }
     const { promise, resolve, reject } = Promise.withResolvers();
     const timeoutMs = opts.timeoutMs ?? this.#commandTimeoutMs;
     const timeout = timeoutMs > 0
-      ? setTimeout(() => { this.#pending.delete(id); reject(Error(`CDP command timeout: ${method}`)); }, timeoutMs)
+      ? setTimeout(() => {
+        this.#pending.delete(id);
+        reject(this.#commandError("CdpCommandTimeoutError", "CDP command timeout", entry));
+      }, timeoutMs)
       : undefined;
-    this.#pending.set(id, { method, resolve, reject, timeout });
+    this.#pending.set(id, { ...entry, resolve, reject, timeout });
     this.#writeStream.write(JSON.stringify(msg) + "\0");
     return promise;
   }
@@ -252,6 +276,7 @@ export class PipeCdpClient {
   }
 
   #onData(chunk) {
+    this.#receivedBytes += chunk.length;
     this.#buffer = Buffer.concat([this.#buffer, chunk]);
     let idx;
     while ((idx = this.#buffer.indexOf(0)) !== -1) {
@@ -259,7 +284,7 @@ export class PipeCdpClient {
       this.#buffer = this.#buffer.subarray(idx + 1);
       if (raw.length === 0) continue;
       let msg;
-      try { msg = JSON.parse(raw); } catch { continue; }
+      try { msg = JSON.parse(raw); } catch { this.#malformedFrameCount++; continue; }
       this._handleTransportMessage(msg);
     }
   }
@@ -276,11 +301,23 @@ export class PipeCdpClient {
         err.data = msg.error.data;
         entry.reject(err);
       } else {
+        if (entry.method === "Target.attachToTarget" && msg.result?.sessionId) {
+          this.#sessionTargets.set(msg.result.sessionId, entry.targetId);
+        }
         entry.resolve(msg.result);
       }
       return;
     }
     if (typeof msg.method === "string") {
+      if (msg.method === "Target.attachedToTarget") {
+        this.#sessionTargets.set(msg.params.sessionId, msg.params.targetInfo.targetId);
+      } else if (msg.method === "Target.detachedFromTarget" && msg.params?.sessionId) {
+        this.#failCommands("CdpSessionDetachedError", "CDP session detached", msg.params.sessionId);
+        this.#sessionTargets.delete(msg.params.sessionId);
+      } else if (msg.method === "Inspector.targetCrashed" && msg.sessionId) {
+        this.#failCommands("CdpSessionCrashedError", "CDP session crashed", msg.sessionId);
+        this.#sessionTargets.delete(msg.sessionId);
+      }
       const handled = msg.method === "Page.javascriptDialogOpening" && msg.sessionId
         ? this.#handleJavaScriptDialog(msg).catch(() => {})
         : undefined;
@@ -292,6 +329,31 @@ export class PipeCdpClient {
   async #handleJavaScriptDialog(msg) {
     const params = await resolveDialogAction(this.#dialogPolicy, msg.params);
     await this.send("Page.handleJavaScriptDialog", params, msg.sessionId);
+  }
+
+  #commandError(name, reason, entry) {
+    const now = performance.now();
+    const receivedBytesSinceSend = this.#receivedBytes - entry.receivedBytes;
+    const details = {
+      method: entry.method, launchId: this.#launchId,
+      sessionId: entry.sessionId ?? null,
+      targetId: entry.targetId ?? this.#sessionTargets.get(entry.sessionId) ?? null,
+      elapsedSinceLaunchMs: Math.round(now - this.#launchedAt),
+      commandElapsedMs: Math.round(now - entry.sentAt),
+      receivedReplyBytes: receivedBytesSinceSend > 0, receivedBytesSinceSend,
+      malformedFrameCount: this.#malformedFrameCount,
+    };
+    const context = Object.entries(details).map(([key, value]) => `${key}=${value}`).join(", ");
+    return Object.assign(Error(`${reason}: ${entry.method} (${context})`), details, { name });
+  }
+
+  #failCommands(name, reason, sessionId) {
+    for (const [id, entry] of this.#pending) {
+      if (sessionId !== undefined && entry.sessionId !== sessionId) continue;
+      if (entry.timeout) clearTimeout(entry.timeout);
+      this.#pending.delete(id);
+      entry.reject(this.#commandError(name, reason, entry));
+    }
   }
 
   #failAll(err) {
