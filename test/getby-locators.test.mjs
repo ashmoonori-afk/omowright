@@ -118,7 +118,9 @@ async function launch() {
 // in-page queries.
 async function idsOf(locator) {
   const count = await locator.count();
-  const fromAll = await Promise.all((await locator.all()).map((item) => item.getAttribute("id")));
+  const all = await locator.all();
+  assert.equal(all.length, count, `${locator}.all() returns one locator per match`);
+  const fromAll = await Promise.all(all.map((item) => item.getAttribute("id")));
   const fromNth = [];
   for (let index = 0; index < count; index++) fromNth.push(await locator.nth(index).getAttribute("id"));
   assert.deepEqual(fromAll, fromNth, `${locator} resolves the same elements through all() and nth()`);
@@ -310,18 +312,23 @@ test("getByRole skips elements hidden from the accessibility tree unless include
     await page.goto(ROLE_HIDDEN_FIXTURE);
     const all = ROLE_HIDDEN_CASES.map(([id]) => id);
     const exposed = ROLE_HIDDEN_CASES.filter(([, hidden]) => !hidden).map(([id]) => id);
-    // count() and nth() run the two in-page role queries (counting and single-element resolution). idsOf() is not used:
-    // all() on a role locator yields the locator itself rather than one locator per match.
-    const roleIds = async (locator) => {
-      const ids = [];
-      for (let index = 0, count = await locator.count(); index < count; index++) ids.push(await locator.nth(index).getAttribute("id"));
-      return ids;
-    };
-
-    assert.deepEqual(await roleIds(page.getByRole("button", { name: "Go" })), exposed);
-    assert.deepEqual(await roleIds(page.getByRole("button", { name: "Go", includeHidden: true })), all);
-    assert.deepEqual(await roleIds(page.locator("#list").getByRole("button", { name: "Go" })), ["list-visible"]);
-    assert.deepEqual(await roleIds(page.locator("#list").getByRole("button", { name: "Go", includeHidden: true })), ["list-hidden", "list-visible"]);
+    for (const [locator, expected] of [
+      [page.getByRole("button", { name: "Go" }), exposed],
+      [page.getByRole("button", { name: "Go", includeHidden: true }), all],
+      [page.locator("#list").getByRole("button", { name: "Go" }), ["list-visible"]],
+      [page.locator("#list").getByRole("button", { name: "Go", includeHidden: true }), ["list-hidden", "list-visible"]],
+      [page.getByText("Go", { exact: true }), all],
+      [page.locator("button"), all],
+      [page.locator("#list").locator("button"), ["list-hidden", "list-visible"]],
+      [page.locator("#list").getByText("Go", { exact: true }), ["list-hidden", "list-visible"]],
+      [page.locator("button").filter({ hasText: "Go" }), all],
+      [page.getByRole("button", { name: "Go" }).filter({ hasNotText: "missing" }), exposed],
+      [page.getByRole("button", { name: "missing" }), []],
+      [page.getByText("missing", { exact: true }), []],
+      [page.locator(".missing"), []],
+    ]) {
+      assert.deepEqual(await idsOf(locator), expected);
+    }
     assert.equal(await page.getByText("Go", { exact: true }).count(), all.length, "getByText has no includeHidden option and matches hidden elements");
   } finally {
     await cleanup();
