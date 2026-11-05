@@ -55,8 +55,10 @@ async function secureDirectory(dir) {
     if (!info) { await mkdir(current, { mode: 0o700 }); info = await lstat(current); }
     if (info.isSymbolicLink()) {
       if (process.platform !== "darwin" || !["/tmp", "/var", "/etc"].includes(current) || info.uid !== 0) throw new BridgeProtocolError(`nativeMessagingHostDir security rejected at ${current}: symlink is not a root-owned macOS system alias`);
-      const target = await readlink(current);
-      if (!(await realpath(current)).startsWith("/private/")) throw new BridgeProtocolError(`nativeMessagingHostDir security rejected at ${current}: system alias target is outside /private`);
+      let target, resolved;
+      try { target = await readlink(current); resolved = await realpath(current); }
+      catch (error) { throw new BridgeProtocolError(`nativeMessagingHostDir security rejected at ${current}: system alias could not be resolved (${error.code ?? error.message})`); }
+      if (!resolved.startsWith("/private/")) throw new BridgeProtocolError(`nativeMessagingHostDir security rejected at ${current}: system alias target is outside /private`);
       // Walk the target from its root too: resolving the entire path would hide unsafe components.
       parts.unshift(...target.split(path.sep).filter(Boolean));
       current = path.isAbsolute(target) ? path.parse(target).root : path.dirname(current);
