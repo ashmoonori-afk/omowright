@@ -73,6 +73,21 @@ running Chromium DevTools endpoint).
   release after the last consumer and its pending response bodies finish;
   no Runtime domain is enabled. A refused Network enable does not break page
   setup, but a transport that emits no network events will time out waits.
+- `page.waitForFunction(pageFunction, arg?, { timeout, polling })` — wait for
+  app-specific page state instead of sleeping. Runs `pageFunction(arg)` (a
+  function, or a string expression) in the page's main world until it returns a
+  truthy value, then resolves with that value by value: DOM nodes and functions
+  come back as `{}`, and a value CDP cannot return by value (a cycle such as
+  `window`, a symbol or a bigint) as `true`. `polling` is `"raf"` (default,
+  every animation frame, or every 100 ms when the page gets no frames, as a
+  background tab of a headful browser does) or a positive number of
+  milliseconds. `timeout`
+  defaults to 30000; `0` waits forever. A same-tab navigation during the wait
+  re-runs the function in the new document. An error thrown by the function,
+  or closing the page, rejects at once; a timeout rejects with
+  `WaitForFunctionTimeoutError` (exported; `timeoutMs`, and the message
+  carries the function source cut at 200 characters). Example:
+  `await page.waitForFunction(n => document.querySelector(".badge")?.textContent === String(n), 3)`.
 - `page.screenshot(options?)` — image bytes (path, fullPage, clip, type, quality).
 - `page.pdf(options?)` — PDF bytes (path, format, margin, printBackground).
 - `page.keyboard` / `page.mouse` — press, type, insertText / move, click, wheel.
