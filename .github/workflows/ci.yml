@@ -91,6 +91,37 @@ jobs:
   # the ubuntu job skips; this job runs the same two suites on Windows so those paths have a CI owner.
   # It runs on push to main, the daily schedule, and every pull request to main (#90 is closed); a manual
   # workflow_dispatch still runs only the ubuntu job.
+  # macOS has its own platform paths (the /tmp, /var and /etc root aliases in the
+  # native-messaging bridge, #47/#135; the named-instance lock backend, #62) that the
+  # Linux and Windows jobs cannot exercise. This job runs the platform-specific files.
+  test-macos:
+    name: test (macos-latest, platform)
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: bun install --frozen-lockfile
+      - name: bun test (platform files, default TMPDIR)
+        run: bun test test/bridge-transport.test.mjs test/bridge-host-dir.test.mjs test/instances.test.mjs
+      - name: node --test (platform files, default TMPDIR)
+        run: node --test test/bridge-transport.test.mjs test/bridge-host-dir.test.mjs test/instances.test.mjs
+      - name: bun and node (platform files, TMPDIR under /tmp)
+        shell: bash
+        run: |
+          mkdir -p /tmp/omowright-ci
+          TMPDIR=/tmp/omowright-ci bun test test/bridge-transport.test.mjs test/bridge-host-dir.test.mjs
+          TMPDIR=/tmp/omowright-ci node --test test/bridge-transport.test.mjs test/bridge-host-dir.test.mjs
+
   test-windows:
     name: test (windows-latest)
     if: >-
