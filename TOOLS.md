@@ -25,6 +25,11 @@ running Chromium DevTools endpoint).
   wait for those document events; `networkidle` waits until no request has been
   in flight for 500 ms (requests already running when the wait starts are not
   seen); `interactive` (default) and `stable` use the `goto` readiness probe.
+- `page.setContent(html, { waitUntil, timeout })` — replace the document with
+  `html`; waits for `load` by default (`domcontentloaded`, `networkidle`,
+  `commit`), timeout 30000ms (0 disables it).
+- `page.waitForTimeout(ms)` — discouraged: a fixed sleep. Wait for the state
+  you need instead (`locator.waitFor`, `page.waitForURL`, `page.waitForLoadState`).
 - `page.snapshot(options?)` — PRIMARY read. Returns `{tree, refs}`; tree lines
   look like `- link "Learn more" [ref=e1]`. Options: `maxDepth` (50),
   `maxChars`, `interactive`, `showHidden`, `selector`, `ref`.
@@ -33,7 +38,8 @@ running Chromium DevTools endpoint).
   sending snapshots to a model.
 - `page.locator(refOrCss)` — `click`, `fill`, `press`, `pressSequentially`,
   `hover`, `check`, `selectOption`, `dragTo`, `setInputFiles`, `textContent`,
-  `innerText`, `isVisible`, `waitFor`, `first/nth/last`, `filter`.
+  `innerText`, `allTextContents`, `allInnerTexts`, `isVisible`, `waitFor`,
+  `first/nth/last`, `filter`, `and` (both match), `or` (either matches, document order).
 - `page.getByRole(role, options?)`, `getByText(text, { exact })`,
   `getByLabel(text, { exact })`, `getByPlaceholder(text, { exact })`,
   `getByAltText(text, { exact })`, `getByTitle(text, { exact })`,

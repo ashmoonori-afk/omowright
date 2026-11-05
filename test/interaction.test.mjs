@@ -125,6 +125,90 @@ test("locator filters and chained getters preserve parent scope", { skip: !SHELL
   }
 });
 
+// Public Playwright API (#146): members generated scripts call that used to throw "is not a function".
+test("page.waitForTimeout, page.setContent, allTextContents/allInnerTexts and locator.and/or follow Playwright", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async (t) => {
+  // /hang.png stays pending until released: setContent replaces the DOM but keeps the Document, so an unfinished image
+  // would also hold back the load event of every later setContent on this page.
+  const pendingImages = [];
+  let released = false;
+  const site = createServer((req, res) => {
+    if (req.url === "/hang.png" && !released) return pendingImages.push(res);
+    res.writeHead(200, { "content-type": "text/css" }).end("p { color: rgb(1, 2, 3) }");
+  });
+  await new Promise(resolve => site.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${site.address().port}`;
+  const { connection, cleanup } = await launch();
+  try {
+    const page = (await createAgentTabs(connection).create("about:blank")).page;
+
+    await t.test("waitForTimeout waits at least the given time", async () => {
+      const start = performance.now();
+      await page.waitForTimeout(100);
+      assert.ok(performance.now() - start >= 99, "resolved before the timeout elapsed");
+    });
+
+    await t.test("setContent replaces the document and waits for load by default", async () => {
+      await page.setContent(`<link rel="stylesheet" href="${origin}/style.css"><p id="set">written</p><script>window.__ran = true</script>`);
+      assert.deepEqual(await page.evaluate(`[document.readyState, document.querySelector("#set").textContent, window.__ran, getComputedStyle(document.querySelector("#set")).color]`), ["complete", "written", true, "rgb(1, 2, 3)"]);
+    });
+
+    await t.test("setContent honors waitUntil and timeout", async () => {
+      const hanging = `<p id="hang">waiting</p><img src="${origin}/hang.png">`;
+      await assert.rejects(page.setContent(hanging, { timeout: 300 }), /Timeout 300ms exceeded/);
+      await page.setContent(hanging, { waitUntil: "domcontentloaded", timeout: 300 });
+      assert.equal(await page.locator("#hang").textContent(), "waiting");
+      await assert.rejects(page.setContent("<p>x</p>", { waitUntil: "never" }), /waitUntil/);
+      released = true;
+      for (const res of pendingImages.splice(0)) res.end();
+      await page.setContent(`<p id="idle">idle</p><img src="${origin}/hang.png">`, { waitUntil: "networkidle", timeout: 10000 });
+      assert.equal(await page.evaluate(`document.images[0].complete`), true);
+      await page.setContent(`<p id="commit">committed</p>`, { waitUntil: "commit" });
+      assert.equal(await page.locator("#commit").textContent(), "committed");
+      await page.setContent(`<p id="unbounded">no timeout</p>`, { timeout: 0 });
+      assert.equal(await page.locator("#unbounded").textContent(), "no timeout");
+    });
+
+    await page.setContent(`<ul>
+      <li id="one"><button id="a" class="primary">One</button></li>
+      <li id="two"><button id="b" style="text-transform: uppercase">two</button></li>
+      <li id="three" style="display: none"><span id="c" class="primary">Three</span></li>
+    </ul>`);
+    const ids = (locator) => locator.evaluateAll(nodes => nodes.map(node => node.id));
+
+    await t.test("allTextContents and allInnerTexts read every match", async () => {
+      assert.deepEqual(await page.locator("li").allTextContents(), ["One", "two", "Three"]);
+      assert.deepEqual(await page.locator("li").allInnerTexts(), ["One", "TWO", "Three"]);
+      assert.deepEqual(await page.getByRole("button").allTextContents(), ["One", "two"]);
+      assert.deepEqual(await page.locator("li").filter({ visible: true }).getByRole("button").allInnerTexts(), ["One", "TWO"]);
+      assert.deepEqual(await page.locator("table").allTextContents(), []);
+    });
+
+    await t.test("and keeps elements matching both locators", async () => {
+      const primary = page.getByRole("button").and(page.locator(".primary"));
+      assert.deepEqual(await ids(primary), ["a"]);
+      assert.equal(await primary.textContent(), "One");
+      assert.equal(await page.locator("#a").and(page.locator("#b")).count(), 0);
+      assert.deepEqual(await ids(page.locator("li").filter({ visible: true }).locator("button").and(page.locator(".primary"))), ["a"]);
+    });
+
+    await t.test("or matches either locator once, in document order", async () => {
+      assert.deepEqual(await ids(page.locator("#c").or(page.locator("#a"))), ["a", "c"]);
+      assert.deepEqual(await ids(page.locator("button").or(page.locator(".primary"))), ["a", "b", "c"]);
+      assert.equal(await page.locator("#missing").or(page.getByRole("button", { name: "two" })).getAttribute("id"), "b");
+      assert.deepEqual(await page.locator("#c").or(page.locator("#a")).allTextContents(), ["One", "Three"]);
+    });
+
+    await t.test("and/or reject a non-locator argument", () => {
+      assert.throws(() => page.locator("li").and("li"), /must be a locator/);
+      assert.throws(() => page.locator("li").or({}), /must be a locator/);
+    });
+  } finally {
+    await cleanup();
+    site.closeAllConnections();
+    site.close();
+  }
+});
+
 async function waitForState(page, expression, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
