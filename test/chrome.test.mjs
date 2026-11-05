@@ -70,12 +70,13 @@ function makeProfileFixture() {
 
 test("chrome.tabs and chrome.windows expose CDP target and window state", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-chrome-test-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const chrome = createChromeApi(connection);
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     await page.goto("https://example.com");
@@ -108,7 +109,7 @@ test("chrome.tabs and chrome.windows expose CDP target and window state", { skip
     const single = await chrome.windows.get(wins[0].id);
     assert.equal(single.id, wins[0].id);
   } finally {
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
   }
 });
@@ -116,12 +117,13 @@ test("chrome.tabs and chrome.windows expose CDP target and window state", { skip
 test("chrome.bookmarks, history, and topSites read real Chrome profile formats", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const profileRoot = makeProfileFixture();
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-chrome-prof-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const chrome = createChromeApi(connection, { profilePath: profileRoot });
 
     const tree = await chrome.bookmarks.getTree();
@@ -156,7 +158,7 @@ test("chrome.bookmarks, history, and topSites read real Chrome profile formats",
     assert.equal(dls[0].state, "complete");
     assert.equal(dls[0].url, "https://files.example.com/old-file.zip");
   } finally {
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
     removeTreeSync(profileRoot);
   }
@@ -176,19 +178,20 @@ test("chrome.downloads.download saves a file through a real server", { skip: !SH
 
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-dl-test-"));
   const downloadDir = mkdtempSync(path.join(tmpdir(), "omowright-dl-dir-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const chrome = createChromeApi(connection, { downloadDir });
     const result = await chrome.downloads.download({ url: `http://127.0.0.1:${port}/file` });
     assert.equal(result.state, "complete");
     assert.ok(result.filename.endsWith("server-file.bin"));
     assert.deepEqual(readFileSync(result.filename), payload);
   } finally {
-    await connection.close();
+    await connection?.close();
     server.close();
     removeTreeSync(ud);
     removeTreeSync(downloadDir);
@@ -197,19 +200,20 @@ test("chrome.downloads.download saves a file through a real server", { skip: !SH
 
 test("extension-bridge-only chrome methods throw UnsupportedOperationError", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-chrome-unsup-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const chrome = createChromeApi(connection);
     await assert.rejects(() => chrome.bookmarks.create({ title: "x", url: "https://x.com" }), UnsupportedOperationError);
     await assert.rejects(() => chrome.history.addUrl({ url: "https://x.com" }), UnsupportedOperationError);
     await assert.rejects(() => chrome.downloads.cancel(1), UnsupportedOperationError);
     await assert.rejects(() => chrome.bookmarks.getTree(), UnsupportedOperationError);
   } finally {
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
   }
 });

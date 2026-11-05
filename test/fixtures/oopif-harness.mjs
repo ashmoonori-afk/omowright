@@ -67,11 +67,17 @@ export async function startFixtureServers() {
 
 export async function launch() {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-oopif-test-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", "--site-per-process", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
+  try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", "--site-per-process", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
+  } catch (error) {
+    removeTreeSync(ud);
+    throw error;
+  }
   return {
     connection,
     cleanup: async () => {
