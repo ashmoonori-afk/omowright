@@ -1079,11 +1079,11 @@
 					for (const child of getLightAndShadowChildNodes(element)) {
 						if (child.nodeType === Node.TEXT_NODE) {
 							if (!child.nodeValue || targetNode.role === "textbox") continue;
-							// Interactive reads keep the label of a node that is itself clickable, whatever
-							// its children are, capped like an accessible name so a card wrapping a whole
+							// Interactive reads keep the label of a node that is itself clickable or scrollable,
+							// whatever its children are, capped like an accessible name so a card wrapping a whole
 							// article stays short; free-standing prose under landmarks and generics is dropped.
 							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role)) {
-								if (!targetNode.interactiveControl) continue;
+								if (!targetNode.interactiveControl && !targetNode.scrollable) continue;
 								const room = INTERACTIVE_LABEL_MAX - (targetNode.labelLength ?? 0);
 								if (room <= 0) continue;
 								const collapsed = child.nodeValue.replace(/\s+/g, " ");

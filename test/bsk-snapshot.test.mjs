@@ -131,7 +131,7 @@ async function refsInside(mainWorldEvaluate, snap, ids) {
   return reply.value;
 }
 
-test("interactive snapshots keep the label of a clickable element whatever its children are", { skip: !SHELL && "no chromium binary found", timeout: 60_000 }, async () => {
+test("interactive snapshots keep the label of a clickable or scrollable element whatever its children are", { skip: !SHELL && "no chromium binary found", timeout: 60_000 }, async () => {
   await withPage(async ({ mainWorldEvaluate }) => {
     const fakeSession = { evaluate: (expression, opts) => mainWorldEvaluate(expression, opts) };
     const snap = await bskSnapshot(fakeSession, { interactive: true });
@@ -152,6 +152,7 @@ test("interactive snapshots keep the label of a clickable element whatever its c
     assert.ok(longLine, `a long clickable card keeps the start of its label:\n${snap.tree}`);
     assert.match(snap.css[ownerRef(snap.tree, "Long card start")] ?? "", /#long-card$/);
     assert.ok(!snap.tree.includes("LONG_CARD_TAIL"), `a long label is capped, not copied whole:\n${longLine}`);
+    assert.match(snap.css[ownerRef(snap.tree, "Scroll box line one")] ?? "", /#scroll-box$/, `a scrollable box keeps its ref and the start of its text:\n${snap.tree}`);
     assert.ok(!snap.tree.includes("This page watches itself"), "free-standing body prose stays out of the interactive read");
   });
 });
