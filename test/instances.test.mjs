@@ -216,6 +216,31 @@ test("closing a launched named browser asks it to quit over CDP", { timeout: 20_
   }
 });
 
+test("named close waits for asynchronous browser cleanup without sending a signal", { timeout: 20_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  const logPath = path.join(registryRoot, "signals.log");
+  let connection;
+  try {
+    connection = await connectNamed("cleanup", namedLaunchOptions(registryRoot, {
+      FAKE_SIGNAL_LOG: logPath, FAKE_ON_CLOSE: "delayed",
+    }));
+    const child = connection.browserProcess;
+    const exit = once(child, "exit");
+    const signals = [];
+    const kill = child.kill.bind(child);
+    child.kill = (signal) => { signals.push(signal); return kill(signal); };
+    await connection.close();
+    connection = null;
+    const [code, signal] = await exit;
+    assert.deepEqual(signals, [], "the acknowledged quit gets its exit grace window");
+    assert.deepEqual(readEvents(logPath).map(({ event }) => event), ["CLOSE"]);
+    assert.deepEqual({ code, signal }, { code: 0, signal: null });
+  } finally {
+    await connection?.close().catch(() => {});
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
 test("closing a named browser that ignores Browser.close still ends it", { timeout: 30_000 }, async () => {
   const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
   const logPath = path.join(registryRoot, "signals.log");

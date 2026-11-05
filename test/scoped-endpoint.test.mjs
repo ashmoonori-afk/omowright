@@ -192,6 +192,65 @@ test("a CdpClient without a URL refuses and dials nothing", { timeout: 15_000 },
 // close() runs must neither install its socket nor keep retrying: a closed
 // client that reconnects holds its caller's process open and, through a port,
 // can reach whatever process holds that port by then (#101 review).
+for (const reopen of [false, true]) {
+  test(`close during discovery ${reopen ? "allows a fresh connection" : "opens no socket and logs no reconnect warning"}`, { timeout: 5_000 }, async () => {
+    const realWarn = console.warn;
+    const discovered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const warnings = [];
+    let requests = 0;
+    const server = createServer(async (_req, res) => {
+      if (++requests === 2) {
+        discovered.resolve();
+        await release.promise;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ webSocketDebuggerUrl: `ws://127.0.0.1:${server.address().port}/devtools/browser/test` }));
+    });
+    const sockets = new WebSocketServer({ noServer: true });
+    let upgrades = 0;
+    server.on("upgrade", (req, socket, head) => {
+      upgrades++;
+      sockets.handleUpgrade(req, socket, head, (ws) => sockets.emit("connection", ws));
+    });
+    sockets.on("connection", (ws) => {
+      ws.on("message", (data) => {
+        const { id } = JSON.parse(data);
+        ws.send(JSON.stringify({ id, result: {} }));
+      });
+    });
+    const port = await listen(server);
+    console.warn = (...args) => warnings.push(args);
+    const client = new CdpClient({ cdpUrl: `http://127.0.0.1:${port}`, reconnectDelaysMs: [0] });
+    try {
+      await client.ensureConnected();
+      [...sockets.clients][0].terminate();
+      await discovered.promise;
+      // Join only to observe when the old background attempt settles.
+      const stale = client.ensureConnected().catch((error) => error);
+      await client.close();
+      const fresh = reopen ? client.ensureConnected() : Promise.resolve();
+      // Attach the rejection handler before releasing the stale attempt.
+      const outcome = Promise.allSettled([fresh]);
+      release.resolve();
+      await stale;
+      const [result] = await outcome;
+      assert.equal(result.status, "fulfilled", String(result.reason));
+      assert.equal(client.isConnected, reopen);
+      assert.equal(upgrades, reopen ? 2 : 1, "stale discovery must not open a socket");
+      assert.deepEqual(warnings, [], "deliberate close must not warn");
+    } finally {
+      release.resolve();
+      await client.close();
+      for (const ws of sockets.clients) ws.terminate();
+      sockets.close();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+      console.warn = realWarn;
+    }
+  });
+}
+
 test("a CdpClient closed while it is reconnecting stays closed", { timeout: 15_000 }, async () => {
   const server = createServer((req, res) => {
     res.writeHead(200, { "content-type": "application/json" });

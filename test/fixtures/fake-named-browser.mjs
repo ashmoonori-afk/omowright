@@ -66,7 +66,12 @@ webSockets.on("connection", (webSocket) => {
       record("CLOSE");
       const reply = JSON.stringify({ id: message.id, result: {} });
       if (process.env.FAKE_ON_CLOSE === "ignore") webSocket.send(reply);
-      else webSocket.send(reply, shutdown);
+      else if (process.env.FAKE_ON_CLOSE === "delayed") {
+        // Model asynchronous browser cleanup after acknowledging the request.
+        // On Windows terminateChild itself grants 5 s after Browser.close.
+        // Cleanup at 6 s needs the named close's additional 2 s window too.
+        webSocket.send(reply, () => setTimeout(shutdown, process.platform === "win32" ? 6_000 : 250));
+      } else webSocket.send(reply, shutdown);
       return;
     }
     const result = message.method === "Browser.getVersion"
