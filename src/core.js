@@ -12,7 +12,6 @@ import { tmpdir } from "node:os";
 import { pageBundle } from "./injected.js";
 import { queryOpenShadowAll } from "./open-shadow-query.js";
 import { snapshotResult } from "./snapshot-diff.js";
-import { queryShadowAll } from "./shadow-query.js";
 import { subscribeConsoleEvents } from "./console-events.js";
 import { targetCreationCapability } from "./internal-capability.js";
 import { Dialog, answerWithPolicy, normalizeDialogPolicy } from "./dialog-policy.js";
@@ -1007,7 +1006,7 @@ async function waitForDomQuiet(xn,jn={}){let Vn=jn.budgetMs??QUIET_WINDOW_MS,qn=
                 ? textMatches(root, step.matcher)
                 : step.kind === 'label'
                   ? labelMatches(root, step.matcher)
-                  : (${queryShadowAll.toString()})(root, step.selector);
+                  : queryOpenShadowAll(root, step.selector);
               if (step.hasText) {
                 matches = matches.filter((node) => matchesText(node, step.hasText));
               }
@@ -1267,7 +1266,7 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
                 ? textMatches(root, step.matcher)
                 : step.kind === 'label'
                   ? labelMatches(root, step.matcher)
-                  : (${queryShadowAll.toString()})(root, step.selector);
+                  : queryOpenShadowAll(root, step.selector);
               if (step.hasText) {
                 matches = matches.filter((node) => matchesText(node, step.hasText));
               }
@@ -1430,7 +1429,7 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
                 ? textMatches(root, step.matcher)
                 : step.kind === 'label'
                   ? labelMatches(root, step.matcher)
-                  : (${queryShadowAll.toString()})(root, step.selector);
+                  : queryOpenShadowAll(root, step.selector);
               if (step.hasText) {
                 matches = matches.filter((node) => matchesText(node, step.hasText));
               }
