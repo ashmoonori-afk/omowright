@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, globSync, readdirSync, readlinkSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, existsSync, globSync, readdirSync, readlinkSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { connectPipe, compactSnapshot, createAgentTabs } from "../src/index.js";
 import { removeTreeSync } from "./fixtures/remove-tree.mjs";
@@ -21,6 +21,74 @@ function findHeadlessShell() {
 }
 
 const SHELL = process.env.SHELL_BIN ?? findHeadlessShell();
+
+function findFfmpeg() {
+  const binary = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+  const cachedBinary = process.platform === "win32" ? "ffmpeg-win64.exe"
+    : process.platform === "darwin" ? "ffmpeg-mac" : "ffmpeg-linux";
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  const caches = [
+    path.join(home, ".cache/ms-playwright"),
+    path.join(home, "Library/Caches/ms-playwright"),
+    ...(process.env.LOCALAPPDATA ? [path.join(process.env.LOCALAPPDATA, "ms-playwright")] : []),
+  ];
+  const candidates = [
+    ...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map(dir => path.join(dir, binary)),
+    ...caches.flatMap(dir => globSync(path.join(dir, "ffmpeg-*", cachedBinary)).sort().reverse()),
+  ];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    const { status, stdout } = spawnSync(candidate, ["-hide_banner", "-encoders"], { encoding: "utf8", timeout: 5000 });
+    if (status === 0 && /^\s*V\S*\s+libvpx\s/m.test(stdout)) return candidate;
+  }
+  return null;
+}
+
+const FFMPEG = findFfmpeg();
+
+// The package entry must finalize real screencast frames into a decodable clip.
+// Dangling bundled imports or missing encoder process helpers break this boundary.
+test("page video start and stop write a playable clip through the package entry", {
+  skip: !SHELL ? "no chromium binary found" : !FFMPEG && "no ffmpeg with the libvpx encoder found on PATH or in the Playwright cache",
+  timeout: 60000,
+}, async () => {
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-video-"));
+  const connection = await connectPipe({
+    browserPath: SHELL,
+    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+    storageRoot: ud,
+  });
+  const originalPath = process.env.PATH;
+  try {
+    // Playwright names its encoder ffmpeg-linux/mac/win64.exe; give the real
+    // recorder's bare `ffmpeg` command that binary without a production seam.
+    const encoderDir = path.join(ud, "encoder");
+    mkdirSync(encoderDir);
+    copyFileSync(FFMPEG, path.join(encoderDir, process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg"));
+    process.env.PATH = `${encoderDir}${path.delimiter}${originalPath ?? ""}`;
+    const page = await connection.newTab("about:blank");
+    const video = page.video();
+    await video.start({ path: "capture/raw.webm", size: { width: 320, height: 240 } });
+    await page.evaluate(() => {
+      document.body.style.background = "red";
+      document.body.textContent = "Recording a page action";
+    });
+    await video.stop({ path: "clips/finished.webm" });
+    const clip = path.join(ud, "clips/finished.webm");
+    assert.equal(await video.path(), clip);
+    assert.ok(statSync(clip).size > 0, "stop writes a non-empty clip");
+    execFileSync(FFMPEG, ["-v", "error", "-i", clip, "-f", "null", "-"], { stdio: "pipe" });
+    await video.saveAs("copies/saved.webm");
+    assert.deepEqual(readFileSync(path.join(ud, "copies/saved.webm")), readFileSync(clip));
+    await video.delete();
+    assert.equal(existsSync(clip), false);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    await connection.close();
+    removeTreeSync(ud);
+  }
+});
 
 const FIXTURE_PAGE = "<!doctype html><title>Example Domain</title><main><h1>Example Domain</h1>"
   + "<p>A local page for the pipe transport test, with enough text for the content readiness probe.</p>"
