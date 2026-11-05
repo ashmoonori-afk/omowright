@@ -39,7 +39,8 @@
     "test:cloak-profile:bun": "bun test test/cloak-profile.test.mjs test/cloak-profile.integration.test.mjs"
   },
   "devDependencies": {
-    "acorn": "8.15.0"
+    "acorn": "8.15.0",
+    "gpt-tokenizer": "4.1.0"
   },
   "dependencies": {
     "ws": "^8.18.3",
