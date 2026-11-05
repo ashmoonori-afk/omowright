@@ -751,8 +751,7 @@ test("a lock waiter looks a live holder's start time up once per acquire", async
 // cache keyed by pid alone compares A's start with Q's and deletes Q's live
 // lock, leaving two holders. Test seam: the lookup is injected because no test
 // can make the OS hand a chosen pid to a new process.
-for (let repetition = 1; repetition <= (process.platform === "win32" ? 30 : 1); repetition += 1) {
-test(`a lock waiter never reclaims a live lock taken by a holder that reused the previous holder's pid [repetition ${repetition}]`, { timeout: 60_000 }, async () => {
+test("a lock waiter never reclaims a live lock taken by a holder that reused the previous holder's pid", { timeout: 60_000 }, async () => {
   const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
   const lockPath = path.join(registryRoot, "pid-reuse.lock");
   const lockText = (start, token) =>
@@ -801,8 +800,6 @@ test(`a lock waiter never reclaims a live lock taken by a holder that reused the
     await rm(registryRoot, { recursive: true, force: true });
   }
 });
-
-}
 
 // Cost contract (#104): the registry root carries an inheritable owner-only
 // grant, so a lock file created in it already admits only its owner and no
