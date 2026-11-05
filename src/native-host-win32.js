@@ -161,7 +161,10 @@ export async function installWin32NativeHost({ hostName, hostPath, dir, registry
   // Only what this call itself created is removed on failure: the directories its own mkdir made (a concurrent install
   // may have made them first) and the manifest only after its own write produced it.
   const firstMade = created.length ? await mkdir(dirChain.at(-1), { recursive: true }) : undefined;
-  const made = firstMade === undefined ? [] : dirChain.slice(dirChain.findIndex((entry) => entry.toLowerCase() === firstMade.toLowerCase()));
+  // mkdir may report the path in its \\?\ namespaced form, so compare both sides in that form.
+  const sameDir = (a, b) => path.win32.toNamespacedPath(a).toLowerCase() === path.win32.toNamespacedPath(b).toLowerCase();
+  const madeIndex = firstMade === undefined ? -1 : dirChain.findIndex((entry) => sameDir(entry, firstMade));
+  const made = madeIndex === -1 ? [] : dirChain.slice(madeIndex);
   let wroteManifest = false;
   try {
     if (created.length) {
