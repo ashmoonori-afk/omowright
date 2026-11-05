@@ -132,10 +132,10 @@ jobs:
             fi
           fi
 
+      # OIDC only: npm exchanges the GitHub id-token for a short-lived publish token.
+      # The package is locked to trusted publishing; there is no NPM_TOKEN secret.
       - name: npm publish
         shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           args=(publish --provenance --access public)
           if [ "$DRY_RUN" = "true" ]; then
