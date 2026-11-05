@@ -16,8 +16,10 @@ const live = { skip: !SHELL && "no chromium binary found", timeout: 60_000 };
 
 test("navigation drops the previous document's iframe before resolving roles", live, async () => {
   const fixtures = await startFixtureServers();
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     const { page } = await createAgentTabs(connection).create("about:blank");
     const url = fixtures.urlFor("oopif-parent.html").replace("localhost", "127.0.0.1");
     await page.goto(url, { waitUntil: "load" });
@@ -32,15 +34,17 @@ test("navigation drops the previous document's iframe before resolving roles", l
     assert.equal(page.frames().length, 2);
     assert.ok(!page.frames().some(frame => frame.frameId === previous.frameId));
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     await fixtures.close();
   }
 });
 
 test("fresh navigation keeps the OOPIF child stitched and clickable", live, async () => {
   const fixtures = await startFixtureServers();
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     const { page } = await createAgentTabs(connection).create("about:blank");
     await page.goto(fixtures.urlFor("oopif-parent.html"));
     const child = await waitForChildContent(page);
@@ -62,15 +66,17 @@ test("fresh navigation keeps the OOPIF child stitched and clickable", live, asyn
     assert.ok(scoped.tree.includes(`button "Inside" [ref=f1e1]`), scoped.tree);
     assert.ok(!scoped.tree.includes("Outside"), scoped.tree);
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     await fixtures.close();
   }
 });
 
 test("open shadow roots are pierced, closed shadow roots stay opaque", live, async () => {
   const fixtures = await startFixtureServers();
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     const { page } = await createAgentTabs(connection).create("about:blank");
     await page.goto(fixtures.urlFor("oopif-shadow.html"));
 
@@ -89,7 +95,7 @@ test("open shadow roots are pierced, closed shadow roots stay opaque", live, asy
     );
     assert.equal(clicked, "1");
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     await fixtures.close();
   }
 });

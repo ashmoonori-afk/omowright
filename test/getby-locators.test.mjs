@@ -98,11 +98,17 @@ const CHAINED = [
 
 async function launch() {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-getby-test-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
+  try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
+  } catch (error) {
+    removeTreeSync(ud);
+    throw error;
+  }
   return { connection, cleanup: async () => { await connection.close(); removeTreeSync(ud); } };
 }
 

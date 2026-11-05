@@ -156,13 +156,14 @@ test("live dialogPolicy dismisses confirm, fills prompt, and still emits dialog"
   timeout: 60_000,
 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-dialogs-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-    dialogPolicy: { accept: false },
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+      dialogPolicy: { accept: false },
+    });
     const page = (await createAgentTabs(connection).create("about:blank")).page;
 
     const confirmDialog = page.waitForEvent("dialog", { timeout: 5000 });
@@ -178,7 +179,7 @@ test("live dialogPolicy dismisses confirm, fills prompt, and still emits dialog"
     assert.equal((await promptDialog).type(), "prompt");
     assert.equal(await prompted, "hello");
   } finally {
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
   }
 });
@@ -283,10 +284,12 @@ for (const kind of ["pipe", "ws"]) {
     timeout: 45_000,
   }, async () => {
     const ud = mkdtempSync(path.join(tmpdir(), `omowright-close-${kind}-`));
-    const { connection, stop } = await openTransport(kind, ud);
+    let transport;
     let timer;
     let off;
     try {
+      transport = await openTransport(kind, ud);
+      const { connection } = transport;
       const page = await connection.newTab();
       const other = await connection.newTab();
       const sessionId = await page.resolveSessionId();
@@ -324,8 +327,8 @@ for (const kind of ["pipe", "ws"]) {
     } finally {
       clearTimeout(timer);
       off?.();
-      await connection.close().catch(() => {});
-      await stop();
+      await transport?.connection.close().catch(() => {});
+      await transport?.stop();
       removeTreeSync(ud);
     }
   });
@@ -337,8 +340,10 @@ for (const kind of ["pipe", "ws"]) {
     timeout: 60_000,
   }, async () => {
     const ud = mkdtempSync(path.join(tmpdir(), `omowright-dialog-object-${kind}-`));
-    const { connection, stop } = await openTransport(kind, ud, { accept: true, promptText: "policy" });
+    let transport;
     try {
+      transport = await openTransport(kind, ud, { accept: true, promptText: "policy" });
+      const { connection } = transport;
       const page = (await createAgentTabs(connection).create("about:blank")).page;
       for (const row of listenerRows) {
         const seen = [];
@@ -360,8 +365,8 @@ for (const kind of ["pipe", "ws"]) {
       assert.equal(await page.evaluate("confirm('no listener')"), true, "the policy accepts with no listener");
       assert.equal(await page.evaluate("prompt('no listener', 'dflt')"), "policy", "the policy fills the prompt with no listener");
     } finally {
-      await connection.close().catch(() => {});
-      await stop();
+      await transport?.connection.close().catch(() => {});
+      await transport?.stop();
       removeTreeSync(ud);
     }
   });

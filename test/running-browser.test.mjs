@@ -50,13 +50,14 @@ test("findRunningBrowser refuses to guess between two live browsers", async () =
   const first = await listen();
   const second = await listen();
   const dirs = [profileWith(`${first.port}\n/devtools/browser/one\n`), profileWith(`${second.port}\n/devtools/browser/two\n`)];
+  const empty = profileWith();
   try {
     await assert.rejects(findRunningBrowser({ userDataDirs: dirs }), (error) => error instanceof RunningBrowserError && error.code === "choose_browser" && error.candidates.length === 2);
-    await assert.rejects(findRunningBrowser({ userDataDirs: [profileWith()] }), (error) => error.code === "not_found");
+    await assert.rejects(findRunningBrowser({ userDataDirs: [empty] }), (error) => error.code === "not_found");
   } finally {
     await first.close();
     await second.close();
-    for (const dir of dirs) removeTreeSync(dir);
+    for (const dir of [...dirs, empty]) removeTreeSync(dir);
   }
 });
 
