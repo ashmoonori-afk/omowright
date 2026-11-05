@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { windowsSystemTool } from "../owner-only.js";
 import { pathFor } from "./browsers.js";
 
 const PROBE_TIMEOUT_MS = 3_000;
@@ -57,14 +58,14 @@ async function probeDefault({ platform, home, run }) {
   }
   if (platform === "win32") {
     const key = "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice";
-    return parseWindowsProgId(await run("reg", ["query", key, "/v", "ProgId"]));
+    return parseWindowsProgId(await run(windowsSystemTool("reg.exe"), ["query", key, "/v", "ProgId"]));
   }
   return null;
 }
 
 async function probeRunning({ platform, run }) {
   const out = platform === "win32"
-    ? await run("tasklist", ["/fo", "csv", "/nh"])
+    ? await run(windowsSystemTool("tasklist.exe"), ["/fo", "csv", "/nh"])
     : await run("ps", platform === "darwin" ? ["-axo", "comm="] : ["-eo", "comm="]);
   return out === null ? null : parseProcessNames(platform, out);
 }

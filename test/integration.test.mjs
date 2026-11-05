@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { connectPipe, compactSnapshot, createAgentTabs } from "../src/index.js";
 import { removeTreeSync } from "./fixtures/remove-tree.mjs";
+import { windowsSystemTool } from "../src/owner-only.js";
 
 function findHeadlessShell() {
   const home = process.env.HOME;
@@ -48,7 +49,7 @@ function listeningTcpSockets(pid) {
       "$found | ForEach-Object { \"$($_.LocalAddress):$($_.LocalPort)\" }",
       "exit 0",
     ].join("; ");
-    return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" }).trim().split(/\r?\n/).filter(Boolean);
+    return execFileSync(windowsSystemTool("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" }).trim().split(/\r?\n/).filter(Boolean);
   }
   if (process.platform !== "linux") {
     try {
