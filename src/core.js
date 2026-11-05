@@ -194,7 +194,15 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
     return {
       bodyExists: true,
       interactiveCount: Array.from(document.querySelectorAll(interactiveSelector))
-        .filter((element) => isVisibleElement(element))
+        .filter((element) => {
+          if (!isVisibleElement(element)) return false;
+          if (element.matches('a[href]')) {
+            const href = element.getAttribute('href').trim();
+            if (href.startsWith('#')) return false;
+            if (href.includes('#') && element.href.split('#')[0] === location.href.split('#')[0]) return false;
+          }
+          return true;
+        })
         .slice(0, 25).length,
       landmarkCount: Array.from(document.querySelectorAll(landmarkSelector))
         .filter((element) => isVisibleElement(element))
@@ -245,7 +253,94 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
     }
 
     return monitor.takeSnapshot();
-  })()`)}function collectTrackedSessionIds(xn,jn){let Vn=new Set;jn&&Vn.add(jn);for(let jn of xn.frameManager.frames.values())Vn.add(jn.sessionId);return Vn}async function waitForNavigationReadiness(xn,jn=`interactive`,Vn=ACTION_MAX_WAIT_MS){return await Promise.race([waitForNavigationReadinessInner(xn,jn,Vn),sleep$12(Vn+1e3).then(()=>{throw new NavigationReadinessTimeoutError(jn,Vn)})])}async function waitForNavigationReadinessInner(xn,jn,Vn){if(isPdfViewerUrl(xn.url()))return await waitForDomReady(xn,Math.min(DOM_READY_TIMEOUT_MS,Vn)).catch(()=>{}),{bodyExists:!0,interactiveCount:0,landmarkCount:0,textChars:0,state:`ready`};let qn=Date.now()+Vn,Jn=0,Yn=collectTrackedSessionIds(xn,await xn.resolveSessionId().catch(()=>void 0)),Zn=new NetworkTracker(xn.cdp,Yn),Qn=null,ei=!1,ti=null,ni=null,si=null;try{for(await waitForDomReady(xn,Math.min(DOM_READY_TIMEOUT_MS,Vn)).catch(()=>{}),jn===`stable`&&await ensureDomMonitor(xn).catch(()=>{}),ni=xn.cdp.on(`Page.frameNavigated`,(xn,jn)=>{!jn.sessionId||!Yn.has(jn.sessionId)||xn.frame.parentId||(ei=!0)});Date.now()<qn;){await sleep$12(PROBE_INTERVAL_MS);try{if(ei){ei=!1,Jn=0,Qn=null,ti=null,si=null,await waitForDomReady(xn,Math.min(DOM_READY_TIMEOUT_MS,Math.max(qn-Date.now(),0))).catch(()=>{}),jn===`stable`&&await ensureDomMonitor(xn).catch(()=>{});continue}let Vn=await takePageProbe(xn);if(Vn.state!==`ready`){if(Vn.state===`sparse`&&Vn.documentComplete){if(si??=Date.now(),Date.now()-si>=SPARSE_COMPLETE_GRACE_MS)return Vn}else si=null;Jn=0,Qn=null,ti=null;continue}if(Zn.captureTrackedRequests(xn.url()).size>0&&(Qn||=Date.now(),Date.now()-Qn<NAVIGATION_NETWORK_BUDGET_MS)){Jn=0;continue}if(Vn.interactiveCount===0&&(ti||=Date.now(),Date.now()-ti<REDIRECT_GUARD_MS))continue;if(jn===`interactive`)return Vn;let Yn=await readDomMonitor(xn);if(Jn=Yn.mutationCount/Yn.totalNodes<=QUIET_MUTATION_RATIO?Jn+1:0,Jn>=QUIET_SAMPLE_COUNT)return Vn}catch(jn){if(!isTransientEvaluationError(jn))throw jn;Jn=0,Qn=null,ti=null;let Vn=Math.max(qn-Date.now(),0);await waitForDomReady(xn,Math.min(DOM_READY_TIMEOUT_MS,Vn))}}throw new NavigationReadinessTimeoutError(jn,Vn)}finally{ni?.(),Zn.dispose()}}async function waitForDomQuiet(xn,jn={}){let Vn=jn.budgetMs??QUIET_WINDOW_MS,qn=jn.sampleIntervalMs??QUIET_SAMPLE_INTERVAL_MS,Jn=jn.quietMutationRatio??QUIET_MUTATION_RATIO,Yn=jn.quietSampleCount??QUIET_SAMPLE_COUNT,Zn=Date.now()+Vn,Qn=0;try{for(await waitForDomReady(xn,Math.min(DOM_READY_TIMEOUT_MS,Vn)).catch(()=>{}),await ensureDomMonitor(xn).catch(()=>{});Date.now()<Zn;){await sleep$12(qn);let jn=await readDomMonitor(xn);if(Qn=jn.mutationCount/jn.totalNodes<=Jn?Qn+1:0,Qn>=Yn)return!0}}catch(xn){if(!isTransientEvaluationError(xn))throw xn}return!1}async function performActionAndWait(xn,jn,Vn={}){let qn=Vn.timeoutMs??ACTION_MAX_WAIT_MS,Jn=Date.now()+qn,Yn=collectTrackedSessionIds(xn,Vn.frameSessionId?await xn.resolveSessionId(Vn.frameSessionId):await xn.resolveSessionId()),Zn=new NetworkTracker(xn.cdp,Yn),Qn=!1,ei,ti=await xn.evaluate(()=>location.href).catch(()=>xn.url()),ni=xn.cdp.on(`Page.frameNavigated`,(xn,jn)=>{!jn.sessionId||!Yn.has(jn.sessionId)||xn.frame.parentId||(Qn=!0)});try{await Zn.ready;ei=await jn();try{let jn=Math.max(Jn-Date.now(),0);await waitForDomReady(xn,Math.min(DOM_READY_TIMEOUT_MS,jn))}catch(xn){if(!isTransientEvaluationError(xn)&&!isDomReadyTimeoutError(xn))throw xn}await sleep$12(Vn.hookWindowMs??ACTION_HOOK_WINDOW_MS);let qn=Zn.captureTrackedRequests(xn.url()),Yn=Math.min(Date.now()+(Vn.requestTrackingBudgetMs??ACTION_REQUEST_TRACKING_BUDGET_MS),Jn);for(;qn.size>0&&Date.now()<Yn&&!Qn;){for(let xn of qn)Zn.isFinished(xn)&&qn.delete(xn);qn.size>0&&await sleep$12(NETWORK_TRACK_POLL_MS)}if(Qn)return await waitForNavigationReadiness(xn,`interactive`,Math.max(Jn-Date.now(),DOM_READY_TIMEOUT_MS)),ei;let ni=await xn.evaluate(()=>location.href).catch(()=>xn.url())!==ti,ri=Math.min(Vn.postSettleMs??(ni?SPA_URL_CHANGE_POST_SETTLE_MS:ACTION_POST_SETTLE_MS),Math.max(Jn-Date.now(),0));if(ri>0){let jn=ni?Math.min(SPA_URL_CHANGE_MIN_DWELL_MS,ri):0;ni&&await sleep$12(jn);let Vn=Math.max(ri-jn,0);await waitForDomQuiet(xn,{budgetMs:Vn,sampleIntervalMs:50,quietSampleCount:1}).catch(()=>!1)||await sleep$12(Vn)}return ei}finally{ni(),Zn.dispose()}}var DOM_READY_TIMEOUT_MS,PROBE_INTERVAL_MS,QUIET_MUTATION_RATIO,QUIET_WINDOW_MS,QUIET_SAMPLE_INTERVAL_MS,QUIET_SAMPLE_COUNT,MIN_PROBE_TEXT_CHARS,ACTION_HOOK_WINDOW_MS,ACTION_REQUEST_TRACKING_BUDGET_MS,ACTION_POST_SETTLE_MS,SPA_URL_CHANGE_MIN_DWELL_MS,SPA_URL_CHANGE_POST_SETTLE_MS,ACTION_MAX_WAIT_MS,NETWORK_TRACK_POLL_MS,NAVIGATION_NETWORK_BUDGET_MS,REDIRECT_GUARD_MS,SPARSE_COMPLETE_GRACE_MS,DOM_MONITOR_KEY,REQUEST_SKIP_TYPES,NavigationReadinessTimeoutError,PDF_VIEWER_EXTENSION_PREFIX,NetworkTracker,init_wait=__esmMin((()=>{init_utils$13(),DOM_READY_TIMEOUT_MS=2e3,PROBE_INTERVAL_MS=100,QUIET_MUTATION_RATIO=.01,QUIET_WINDOW_MS=350,QUIET_SAMPLE_INTERVAL_MS=100,QUIET_SAMPLE_COUNT=2,MIN_PROBE_TEXT_CHARS=20,ACTION_HOOK_WINDOW_MS=150,ACTION_REQUEST_TRACKING_BUDGET_MS=1200,ACTION_POST_SETTLE_MS=300,SPA_URL_CHANGE_MIN_DWELL_MS=500,SPA_URL_CHANGE_POST_SETTLE_MS=750,ACTION_MAX_WAIT_MS=8e3,NETWORK_TRACK_POLL_MS=50,NAVIGATION_NETWORK_BUDGET_MS=1500,REDIRECT_GUARD_MS=1e3,SPARSE_COMPLETE_GRACE_MS=1500,DOM_MONITOR_KEY=`__omowrightWaitDomMonitor`,REQUEST_SKIP_TYPES=new Set([`WebSocket`,`EventSource`,`Ping`,`Prefetch`,`CSPViolationReport`]),NavigationReadinessTimeoutError=class extends Error{mode;timeoutMs;constructor(xn,jn){super(`Timed out waiting for ${xn} page after ${jn}ms`),this.name=`NavigationReadinessTimeoutError`,this.mode=xn,this.timeoutMs=jn}},PDF_VIEWER_EXTENSION_PREFIX=`chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai`,NetworkTracker=class{#e=new Map;#t=[];#n;constructor(xn,jn){for(let sessionId of jn)this.#t.push(acquireNetwork(xn,sessionId));this.ready=Promise.all(this.#t.map(off=>off.ready));this.#n=new Set(jn),this.#t.push(xn.on(`Network.requestWillBeSent`,(xn,jn)=>{if(!jn.sessionId||!this.#n.has(jn.sessionId))return;let Vn=``;try{Vn=new URL(xn.request.url).hostname.toLowerCase()}catch{return}this.#e.set(xn.requestId,{hostname:Vn,resourceType:xn.type??`Other`,finished:!1,startedAt:Date.now()})}));let Vn=xn=>{let jn=this.#e.get(xn);jn&&(jn.finished=!0)};this.#t.push(xn.on(`Network.loadingFinished`,(xn,jn)=>{jn.sessionId&&this.#n.has(jn.sessionId)&&Vn(xn.requestId)})),this.#t.push(xn.on(`Network.loadingFailed`,(xn,jn)=>{jn.sessionId&&this.#n.has(jn.sessionId)&&Vn(xn.requestId)}))}captureTrackedRequests(xn){let jn=new Set,Vn=getNaiveRegistrableDomain(xn);for(let[xn,qn]of this.#e)qn.finished||isSameSite(qn.hostname,Vn)&&(REQUEST_SKIP_TYPES.has(qn.resourceType)||jn.add(xn));return jn}isFinished(xn){return this.#e.get(xn)?.finished??!0}dispose(){for(let xn of this.#t)xn();this.#t.length=0}}}));function contentEditableValueMatches(xn,jn){if(xn===jn)return!0;let Vn=xn=>xn.replace(/\u00a0/g,` `).replace(/\r\n/g,`
+  })()`)}function collectTrackedSessionIds(xn,jn){let Vn=new Set;jn&&Vn.add(jn);for(let jn of xn.frameManager.frames.values())Vn.add(jn.sessionId);return Vn}async function waitForNavigationReadiness(xn,jn=`interactive`,Vn=ACTION_MAX_WAIT_MS){return await Promise.race([waitForNavigationReadinessInner(xn,jn,Vn),sleep$12(Vn+1e3).then(()=>{throw new NavigationReadinessTimeoutError(jn,Vn)})])}async function waitForNavigationDomQuiet(page, budgetMs) {
+  if (budgetMs <= 0) return;
+  await page.evaluate((budgetMs) => new Promise(resolve => {
+    let observer, quietTimer;
+    const finish = () => {
+      clearTimeout(quietTimer);
+      clearTimeout(deadlineTimer);
+      window.removeEventListener('load', onLoad);
+      observer?.disconnect();
+      resolve();
+    };
+    const resetQuiet = () => {
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(finish, 500);
+    };
+    const onLoad = () => {
+      if (document.body) {
+        observer = new MutationObserver(resetQuiet);
+        observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+      }
+      resetQuiet();
+    };
+    const deadlineTimer = setTimeout(finish, budgetMs);
+    if (document.readyState === 'complete') onLoad();
+    else window.addEventListener('load', onLoad, { once: true });
+  }), budgetMs);
+}
+async function waitForNavigationReadinessInner(page, mode, timeoutMs) {
+  if (isPdfViewerUrl(page.url())) {
+    await waitForDomReady(page, Math.min(DOM_READY_TIMEOUT_MS, timeoutMs)).catch(() => {});
+    return { bodyExists: true, interactiveCount: 0, landmarkCount: 0, textChars: 0, state: 'ready' };
+  }
+  const deadline = Date.now() + timeoutMs;
+  const sessions = collectTrackedSessionIds(page, await page.resolveSessionId().catch(() => undefined));
+  const network = new NetworkTracker(page.cdp, sessions);
+  let quietSamples = 0, networkStarted = null, navigated = false;
+  const off = page.cdp.on('Page.frameNavigated', (event, meta) => {
+    if (meta.sessionId && sessions.has(meta.sessionId) && !event.frame.parentId) navigated = true;
+  });
+  try {
+    await waitForDomReady(page, Math.min(DOM_READY_TIMEOUT_MS, timeoutMs)).catch(() => {});
+    if (mode === 'stable') await ensureDomMonitor(page).catch(() => {});
+    while (Date.now() < deadline) {
+      await sleep$12(PROBE_INTERVAL_MS);
+      try {
+        if (navigated) {
+          navigated = false;
+          quietSamples = 0;
+          networkStarted = null;
+          await waitForDomReady(page, Math.min(DOM_READY_TIMEOUT_MS, Math.max(deadline - Date.now(), 0))).catch(() => {});
+          if (mode === 'stable') await ensureDomMonitor(page).catch(() => {});
+          continue;
+        }
+        const probe = await takePageProbe(page);
+        if (probe.state !== 'ready' && !(probe.state === 'sparse' && probe.documentComplete)) {
+          quietSamples = 0;
+          continue;
+        }
+        if (network.captureTrackedRequests(page.url()).size > 0) {
+          networkStarted ??= Date.now();
+          if (Date.now() - networkStarted < NAVIGATION_NETWORK_BUDGET_MS) {
+            quietSamples = 0;
+            continue;
+          }
+        }
+        // Load and body mutations share the existing bounded network budget. A stalled
+        // fetch or a continuously changing document must not extend it indefinitely.
+        const settleDeadline = Math.min(deadline, (networkStarted ?? Date.now()) + NAVIGATION_NETWORK_BUDGET_MS);
+        await waitForNavigationDomQuiet(page, Math.max(settleDeadline - Date.now(), 0));
+        if (navigated) continue;
+        if (mode === 'interactive') return probe;
+        const sample = await readDomMonitor(page);
+        quietSamples = sample.mutationCount / sample.totalNodes <= QUIET_MUTATION_RATIO ? quietSamples + 1 : 0;
+        if (quietSamples >= QUIET_SAMPLE_COUNT) return probe;
+      } catch (error) {
+        if (!isTransientEvaluationError(error)) throw error;
+        quietSamples = 0;
+        networkStarted = null;
+        await waitForDomReady(page, Math.min(DOM_READY_TIMEOUT_MS, Math.max(deadline - Date.now(), 0)));
+      }
+    }
+    throw new NavigationReadinessTimeoutError(mode, timeoutMs);
+  } finally {
+    off();
+    network.dispose();
+  }
+}
+async function waitForDomQuiet(xn,jn={}){let Vn=jn.budgetMs??QUIET_WINDOW_MS,qn=jn.sampleIntervalMs??QUIET_SAMPLE_INTERVAL_MS,Jn=jn.quietMutationRatio??QUIET_MUTATION_RATIO,Yn=jn.quietSampleCount??QUIET_SAMPLE_COUNT,Zn=Date.now()+Vn,Qn=0;try{for(await waitForDomReady(xn,Math.min(DOM_READY_TIMEOUT_MS,Vn)).catch(()=>{}),await ensureDomMonitor(xn).catch(()=>{});Date.now()<Zn;){await sleep$12(qn);let jn=await readDomMonitor(xn);if(Qn=jn.mutationCount/jn.totalNodes<=Jn?Qn+1:0,Qn>=Yn)return!0}}catch(xn){if(!isTransientEvaluationError(xn))throw xn}return!1}async function performActionAndWait(xn,jn,Vn={}){let qn=Vn.timeoutMs??ACTION_MAX_WAIT_MS,Jn=Date.now()+qn,Yn=collectTrackedSessionIds(xn,Vn.frameSessionId?await xn.resolveSessionId(Vn.frameSessionId):await xn.resolveSessionId()),Zn=new NetworkTracker(xn.cdp,Yn),Qn=!1,ei,ti=await xn.evaluate(()=>location.href).catch(()=>xn.url()),ni=xn.cdp.on(`Page.frameNavigated`,(xn,jn)=>{!jn.sessionId||!Yn.has(jn.sessionId)||xn.frame.parentId||(Qn=!0)});try{await Zn.ready;ei=await jn();try{let jn=Math.max(Jn-Date.now(),0);await waitForDomReady(xn,Math.min(DOM_READY_TIMEOUT_MS,jn))}catch(xn){if(!isTransientEvaluationError(xn)&&!isDomReadyTimeoutError(xn))throw xn}await sleep$12(Vn.hookWindowMs??ACTION_HOOK_WINDOW_MS);let qn=Zn.captureTrackedRequests(xn.url()),Yn=Math.min(Date.now()+(Vn.requestTrackingBudgetMs??ACTION_REQUEST_TRACKING_BUDGET_MS),Jn);for(;qn.size>0&&Date.now()<Yn&&!Qn;){for(let xn of qn)Zn.isFinished(xn)&&qn.delete(xn);qn.size>0&&await sleep$12(NETWORK_TRACK_POLL_MS)}if(Qn)return await waitForNavigationReadiness(xn,`interactive`,Math.max(Jn-Date.now(),DOM_READY_TIMEOUT_MS)),ei;let ni=await xn.evaluate(()=>location.href).catch(()=>xn.url())!==ti,ri=Math.min(Vn.postSettleMs??(ni?SPA_URL_CHANGE_POST_SETTLE_MS:ACTION_POST_SETTLE_MS),Math.max(Jn-Date.now(),0));if(ri>0){let jn=ni?Math.min(SPA_URL_CHANGE_MIN_DWELL_MS,ri):0;ni&&await sleep$12(jn);let Vn=Math.max(ri-jn,0);await waitForDomQuiet(xn,{budgetMs:Vn,sampleIntervalMs:50,quietSampleCount:1}).catch(()=>!1)||await sleep$12(Vn)}return ei}finally{ni(),Zn.dispose()}}var DOM_READY_TIMEOUT_MS,PROBE_INTERVAL_MS,QUIET_MUTATION_RATIO,QUIET_WINDOW_MS,QUIET_SAMPLE_INTERVAL_MS,QUIET_SAMPLE_COUNT,MIN_PROBE_TEXT_CHARS,ACTION_HOOK_WINDOW_MS,ACTION_REQUEST_TRACKING_BUDGET_MS,ACTION_POST_SETTLE_MS,SPA_URL_CHANGE_MIN_DWELL_MS,SPA_URL_CHANGE_POST_SETTLE_MS,ACTION_MAX_WAIT_MS,NETWORK_TRACK_POLL_MS,NAVIGATION_NETWORK_BUDGET_MS,DOM_MONITOR_KEY,REQUEST_SKIP_TYPES,NavigationReadinessTimeoutError,PDF_VIEWER_EXTENSION_PREFIX,NetworkTracker,init_wait=__esmMin((()=>{init_utils$13(),DOM_READY_TIMEOUT_MS=2e3,PROBE_INTERVAL_MS=100,QUIET_MUTATION_RATIO=.01,QUIET_WINDOW_MS=350,QUIET_SAMPLE_INTERVAL_MS=100,QUIET_SAMPLE_COUNT=2,MIN_PROBE_TEXT_CHARS=20,ACTION_HOOK_WINDOW_MS=150,ACTION_REQUEST_TRACKING_BUDGET_MS=1200,ACTION_POST_SETTLE_MS=300,SPA_URL_CHANGE_MIN_DWELL_MS=500,SPA_URL_CHANGE_POST_SETTLE_MS=750,ACTION_MAX_WAIT_MS=8e3,NETWORK_TRACK_POLL_MS=50,NAVIGATION_NETWORK_BUDGET_MS=1500,DOM_MONITOR_KEY=`__omowrightWaitDomMonitor`,REQUEST_SKIP_TYPES=new Set([`WebSocket`,`EventSource`,`Ping`,`Prefetch`,`CSPViolationReport`]),NavigationReadinessTimeoutError=class extends Error{mode;timeoutMs;constructor(xn,jn){super(`Timed out waiting for ${xn} page after ${jn}ms`),this.name=`NavigationReadinessTimeoutError`,this.mode=xn,this.timeoutMs=jn}},PDF_VIEWER_EXTENSION_PREFIX=`chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai`,NetworkTracker=class{#e=new Map;#t=[];#n;constructor(xn,jn){for(let sessionId of jn)this.#t.push(acquireNetwork(xn,sessionId));this.ready=Promise.all(this.#t.map(off=>off.ready));this.#n=new Set(jn),this.#t.push(xn.on(`Network.requestWillBeSent`,(xn,jn)=>{if(!jn.sessionId||!this.#n.has(jn.sessionId))return;let Vn=``;try{Vn=new URL(xn.request.url).hostname.toLowerCase()}catch{return}this.#e.set(xn.requestId,{hostname:Vn,resourceType:xn.type??`Other`,finished:!1,startedAt:Date.now()})}));let Vn=xn=>{let jn=this.#e.get(xn);jn&&(jn.finished=!0)};this.#t.push(xn.on(`Network.loadingFinished`,(xn,jn)=>{jn.sessionId&&this.#n.has(jn.sessionId)&&Vn(xn.requestId)})),this.#t.push(xn.on(`Network.loadingFailed`,(xn,jn)=>{jn.sessionId&&this.#n.has(jn.sessionId)&&Vn(xn.requestId)}))}captureTrackedRequests(xn){let jn=new Set,Vn=getNaiveRegistrableDomain(xn);for(let[xn,qn]of this.#e)qn.finished||isSameSite(qn.hostname,Vn)&&(REQUEST_SKIP_TYPES.has(qn.resourceType)||jn.add(xn));return jn}isFinished(xn){return this.#e.get(xn)?.finished??!0}dispose(){for(let xn of this.#t)xn();this.#t.length=0}}}));function contentEditableValueMatches(xn,jn){if(xn===jn)return!0;let Vn=xn=>xn.replace(/\u00a0/g,` `).replace(/\r\n/g,`
 `).replace(/\n+$/g,``);return Vn(xn)===Vn(jn)}function isStaleObjectError(xn){let jn=xn instanceof Error?xn.message:String(xn);return jn.includes(`Cannot find object with given id`)||jn.includes(`Cannot find context with specified id`)||jn.includes(`Object reference chain is too long`)}function quadArea(xn){if(xn.length!==8)return 0;let jn=[{x:xn[0],y:xn[1]},{x:xn[2],y:xn[3]},{x:xn[4],y:xn[5]},{x:xn[6],y:xn[7]}],Vn=0;for(let xn=0;xn<jn.length;xn+=1){let qn=jn[xn],Jn=jn[(xn+1)%jn.length];Vn+=qn.x*Jn.y-Jn.x*qn.y}return Math.abs(Vn/2)}function quadCenter(xn){return{x:(xn[0]+xn[2]+xn[4]+xn[6])/4,y:(xn[1]+xn[3]+xn[5]+xn[7])/4}}async function resolveActionSessionId(xn,jn){return await xn.resolveSessionId(jn?.frameSessionId)}async function callOnElement(xn,jn,Vn,...qn){try{let Jn=qn.map(xn=>({value:xn})),Yn=await resolveActionSessionId(xn,jn),{result:Zn,exceptionDetails:Qn}=await xn.cdp.send(`Runtime.callFunctionOn`,{objectId:jn.objectId,functionDeclaration:Vn,arguments:Jn,returnByValue:!0,awaitPromise:!0,userGesture:!0},Yn);if(Qn)throw Error(formatRuntimeException(Qn,`Runtime.callFunctionOn failed`));return Zn.value}catch(xn){throw isStaleObjectError(xn)?new RefStaleError(jn.objectId):xn}}async function callOnElementSync(xn,jn,Vn,...qn){try{let Jn=qn.map(xn=>({value:xn})),Yn=await resolveActionSessionId(xn,jn),{result:Zn,exceptionDetails:Qn}=await xn.cdp.send(`Runtime.callFunctionOn`,{objectId:jn.objectId,functionDeclaration:Vn,arguments:Jn,returnByValue:!0,awaitPromise:!1,userGesture:!0},Yn);if(Qn)throw Error(formatRuntimeException(Qn,`Runtime.callFunctionOn failed`));return Zn.value}catch(xn){throw isStaleObjectError(xn)?new RefStaleError(jn.objectId):xn}}async function callOnElementHandle(xn,jn,Vn,...qn){try{let Jn=qn.map(xn=>({value:xn})),Yn=await resolveActionSessionId(xn,jn),{result:Zn,exceptionDetails:Qn}=await xn.cdp.send(`Runtime.callFunctionOn`,{objectId:jn.objectId,functionDeclaration:Vn,arguments:Jn,returnByValue:!1,awaitPromise:!0,userGesture:!0},Yn);if(Qn)throw Error(formatRuntimeException(Qn,`Runtime.callFunctionOn failed`));if(!Zn.objectId)throw Error(`Runtime.callFunctionOn did not return an object handle`);return{objectId:Zn.objectId,frameId:jn.frameId,frameSessionId:jn.frameSessionId,contextId:jn.contextId}}catch(xn){throw isStaleObjectError(xn)?new RefStaleError(jn.objectId):xn}}async function resolveClickTarget(xn,jn){return await callOnElementHandle(xn,jn,`function() {
       const root = globalThis.__omowright?.retarget(this, 'none') || this;
 
