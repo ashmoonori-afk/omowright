@@ -152,7 +152,7 @@ test("the page API runs through an endpoint that allows only OMOWRIGHT_PAGE_CDP_
     assert.ok(endpoint.unauthorized.length > 0, "the stale token was refused");
     const enabled = once(endpoint.events, "Runtime.enable", { signal: AbortSignal.timeout(5000) });
     const firstListener = () => {};
-    const secondListener = () => {};
+    const secondListener = firstListener;
     const removeFirst = page.on("console", firstListener);
     await enabled;
     page.on("console", secondListener);
