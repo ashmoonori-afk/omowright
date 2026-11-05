@@ -63,7 +63,7 @@ await page.close();
 ```js
 const snap = await page.snapshot();            // { tree, refs } or JSON string
 const tree = compactSnapshot(snap);            // raw tree, ~57% smaller
-await page.snapshot({ interactive: true });    // interactive elements only
+await page.snapshot({ interactive: true });    // controls with their labels, headings, landmarks; no body prose
 await page.snapshot({ maxDepth: 20, maxChars: 4000, selector: "main" });
 ```
 

@@ -149,6 +149,8 @@
 		"details",
 		"summary"
 	]);
+	// Longest label an interactive read keeps for a clickable generic; matches normalizeName.
+	const INTERACTIVE_LABEL_MAX = 100;
 	const INTERACTIVE_REF_ROLES = /* @__PURE__ */ new Set([
 		"button",
 		"link",
@@ -689,14 +691,6 @@
 		}
 		return true;
 	}
-	function childrenAreDecorations(element) {
-		const DECORATION_TAGS = /* @__PURE__ */ new Set(["svg", "path", "i", "b", "br", "img", "span"]);
-		for (const child of element.children) {
-			if (!DECORATION_TAGS.has(child.tagName.toLowerCase())) return false;
-			if (hasStrongInteractivity(child)) return false;
-		}
-		return true;
-	}
 	function hasStrongInteractivity(element) {
 		const tag = element.tagName.toLowerCase();
 		if (INTERACTIVE_TAGS.has(tag)) return true;
@@ -720,7 +714,7 @@
 		let hasPointerInteraction = hasCursorPointer;
 		if (hasCursorPointer && !hasOnClick && !hasTabIndex) {
 			const parent = element.parentElement;
-			if (parent && hasStrongInteractivity(parent)) hasPointerInteraction = false;
+			if (parent && (window.getComputedStyle(parent).cursor === "pointer" || hasStrongInteractivity(parent))) hasPointerInteraction = false;
 		}
 		const hints = [];
 		if (hasPointerInteraction) hints.push("cursor:pointer");
@@ -829,7 +823,6 @@
 		if (role === "generic" && !nodeRefId && !hidden) return null;
 		const hints = [];
 		if (interactivity.interactive && !interactivity.isInteractiveTag && interactivity.hints.length > 0) hints.push(...interactivity.hints);
-		const interactiveLeafControl = interactivity.interactive && (element.childElementCount === 0 || childrenAreDecorations(element));
 		const href = element.getAttribute("href");
 		const type = element.getAttribute("type");
 		const placeholder = element.getAttribute("placeholder");
@@ -850,7 +843,7 @@
 			selected: selected || void 0,
 			focused: focused || void 0,
 			disabled: disabled || void 0,
-			interactiveLeafControl: interactiveLeafControl || void 0,
+			interactiveControl: interactivity.interactive || void 0,
 			refId: nodeRefId,
 			hints,
 			href: href ?? void 0,
@@ -1086,9 +1079,18 @@
 					for (const child of getLightAndShadowChildNodes(element)) {
 						if (child.nodeType === Node.TEXT_NODE) {
 							if (!child.nodeValue || targetNode.role === "textbox") continue;
-							// Interactive reads keep a control's own visible label and heading text,
-							// but drop free-standing body prose under landmarks and generics.
-							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role) && !targetNode.interactiveLeafControl) continue;
+							// Interactive reads keep the label of a node that is itself clickable, whatever
+							// its children are, capped like an accessible name so a card wrapping a whole
+							// article stays short; free-standing prose under landmarks and generics is dropped.
+							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role)) {
+								if (!targetNode.interactiveControl) continue;
+								const room = INTERACTIVE_LABEL_MAX - (targetNode.labelLength ?? 0);
+								if (room <= 0) continue;
+								const collapsed = child.nodeValue.replace(/\s+/g, " ");
+								targetNode.labelLength = (targetNode.labelLength ?? 0) + Math.min(collapsed.length, room);
+								targetNode.children.push(collapsed.length > room ? collapsed.substring(0, room) : child.nodeValue);
+								continue;
+							}
 							targetNode.children.push(child.nodeValue);
 							continue;
 						}
