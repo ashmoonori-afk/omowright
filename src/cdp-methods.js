@@ -47,6 +47,8 @@ export const OMOWRIGHT_PAGE_CDP_METHODS = Object.freeze([
   "Page.startScreencast",
   "Page.stopScreencast",
   "Runtime.callFunctionOn",
+  "Runtime.disable",
+  "Runtime.discardConsoleEntries",
   "Runtime.enable",
   "Runtime.evaluate",
   "Runtime.releaseObject",

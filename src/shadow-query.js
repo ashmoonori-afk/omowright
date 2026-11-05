@@ -1,7 +1,20 @@
 // Self-contained because locator queries serialize this into the frame's isolated world.
 export function queryShadowAll(root, selector) {
-  // Let Chromium validate CSS syntax, including selectors inside functional pseudo-classes.
-  root.querySelectorAll(selector);
+  const nativeMatches = Array.from(root.querySelectorAll(selector));
+  // Discover roots without retaining every element or spreading a DOM-sized argument list.
+  const scopes = [];
+  const pending = [root];
+  while (pending.length) {
+    const current = pending.pop();
+    scopes.push(current);
+    const elements = current.querySelectorAll("*");
+    for (let index = elements.length - 1; index >= 0; index--) {
+      if (elements[index].shadowRoot) pending.push(elements[index].shadowRoot);
+    }
+    if (current instanceof Element && current.shadowRoot) pending.push(current.shadowRoot);
+  }
+  // Native matching handles the common shadow-free document without a per-element JS matcher.
+  if (scopes.length === 1 && !(root instanceof Element)) return nativeMatches;
   const groups = [];
   let parts = [], token = "", depth = 0, quote = "", escaped = false, combinator = " ";
   const flush = () => {
@@ -28,6 +41,7 @@ export function queryShadowAll(root, selector) {
   const parent = node => node.parentElement ?? node.getRootNode().host ?? null;
   const scope = root instanceof Document ? root.documentElement : root;
   const matches = (node, parts, index) => {
+    if (node === root && index > 0) return false;
     const part = parts[index];
     const scoped = /^:scope\b/.test(part.selector);
     const compound = scoped ? part.selector.replace(/^:scope\b/, "*") : part.selector;
@@ -51,13 +65,23 @@ export function queryShadowAll(root, selector) {
     }
     return false;
   };
-  const candidates = [];
-  const visit = current => {
-    const elements = Array.from(current.querySelectorAll("*"));
-    candidates.push(...elements);
-    if (current instanceof Element && current.shadowRoot) visit(current.shadowRoot);
-    for (const element of elements) if (element.shadowRoot) visit(element.shadowRoot);
-  };
-  visit(root);
-  return candidates.filter(node => groups.some(parts => matches(node, parts, parts.length - 1)));
+  // Anchor native selectors to an element scope, including chains starting at the scope itself.
+  let result = nativeMatches;
+  if (root instanceof Element) {
+    const scopedSelectors = [];
+    for (const parts of groups) {
+      const first = parts[0].selector;
+      const rest = parts.slice(1).map(part => `${part.combinator} ${part.selector}`).join(" ");
+      const scoped = /^:scope\b/.test(first);
+      scopedSelectors.push(`${scoped ? "" : ":scope "}${first} ${rest}`);
+      if (!scoped && parts.length > 1 && root.matches(first)) scopedSelectors.push(`:scope ${rest}`);
+    }
+    result = Array.from(root.querySelectorAll(scopedSelectors.join(", ")));
+  }
+  for (let index = 1; index < scopes.length; index++) {
+    for (const node of scopes[index].querySelectorAll("*")) {
+      if (groups.some(parts => matches(node, parts, parts.length - 1))) result.push(node);
+    }
+  }
+  return result;
 }
