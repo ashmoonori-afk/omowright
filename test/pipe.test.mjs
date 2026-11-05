@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PipeCdpClient, connectPipe } from "../src/pipe.js";
+import { CdpCommandTimeoutError, CdpPipeClosedError, CdpSessionCrashedError, CdpSessionDetachedError, PipeCdpClient, connectPipe } from "../src/index.js";
 import { TERM_GRACE_MS, fixture, lifecycleClient, readEvents, scratchDir, spawnCaller, waitFor } from "./fixtures/browser-lifecycle.mjs";
 
 const harness = fileURLToPath(new URL("./fixtures/pipe-leak-harness.mjs", import.meta.url));
@@ -27,10 +27,10 @@ async function failureClient(t) {
   return client;
 }
 
-async function holdCommand(client, sessionId) {
+async function holdCommand(client, sessionId, opts = { timeoutMs: 1000 }) {
   const { promise, resolve } = Promise.withResolvers();
   const off = client.on("Fixture.held", params => { if (params.sessionId === sessionId) resolve(); });
-  const outcome = client.send("Fixture.hold", undefined, sessionId, { timeoutMs: 1000 })
+  const outcome = client.send("Fixture.hold", undefined, sessionId, opts)
     .then(result => ({ result }), error => ({ error }));
   try {
     await Promise.race([promise, outcome.then(() => assert.fail("command settled before the child acknowledged it"))]);
@@ -48,6 +48,7 @@ test("pipe timeout identifies its launch, session, target and absence of reply b
     const pid = client.childProcess.pid;
     const { sessionId } = await client.send("Target.attachToTarget", { targetId: "target-a", flatten: true });
     await assert.rejects(client.send("Fixture.silent", undefined, sessionId, { timeoutMs: 100 }), error => {
+      assert.ok(error instanceof CdpCommandTimeoutError);
       assert.equal(error.name, "CdpCommandTimeoutError");
       assert.equal(error.method, "Fixture.silent");
       assert.equal(error.sessionId, sessionId);
@@ -71,7 +72,7 @@ test("pipe timeout identifies its launch, session, target and absence of reply b
 test("pipe timeout distinguishes incoming traffic from an answered command", { timeout: 10_000 }, async t => {
   const client = await failureClient(t);
   await assert.rejects(client.send("Fixture.traffic", undefined, undefined, { timeoutMs: 100 }), error => {
-    assert.equal(error.name, "CdpCommandTimeoutError");
+    assert.ok(error instanceof CdpCommandTimeoutError);
     assert.equal(error.sessionId, null);
     assert.equal(error.targetId, null);
     assert.equal(error.receivedReplyBytes, true);
@@ -103,16 +104,34 @@ for (const event of ["end", "close"]) {
       client.childProcess.stdio[4].destroy();
     }
     const { error } = await outcome;
-    assert.equal(error?.name, "CdpPipeClosedError");
+    assert.ok(error instanceof CdpPipeClosedError, `expected CdpPipeClosedError, got ${error}`);
     assert.equal(error.method, "Fixture.hold");
     assert.equal(error.sessionId, "session-a");
     assert.equal(client.childProcess.exitCode, null);
     assert.equal(client.childProcess.signalCode, null);
-    if (trigger) assert.equal((await trigger).error?.name, "CdpPipeClosedError");
+    if (trigger) assert.ok((await trigger).error instanceof CdpPipeClosedError);
   });
 }
 
-for (const [action, name] of [["detach", "CdpSessionDetachedError"], ["crash", "CdpSessionCrashedError"]]) {
+// A helper process that inherited the CDP fd keeps the old launch's pipe open
+// after close(); its EOF must not fail the commands of the launch that replaced it.
+test("a previous launch's pipe EOF leaves the relaunched browser's pending commands alone", { timeout: 15_000 }, async t => {
+  const client = await failureClient(t);
+  const { pid: holderPid } = await client.send("Fixture.shareOutput");
+  t.after(() => { try { process.kill(holderPid, "SIGKILL"); } catch {} });
+  const oldPipe = client.childProcess.stdio[4];
+  const oldPipeClosed = once(oldPipe, "close");
+  await client.close();
+  assert.equal(oldPipe.readableEnded, false, "the helper should still hold the old pipe open");
+  await client.ensureConnected();
+  const { outcome } = await holdCommand(client, "session-a", {});
+  process.kill(holderPid, "SIGKILL");
+  await oldPipeClosed;
+  await client.send("Fixture.release", { sessionId: "session-a" });
+  assert.deepEqual(await outcome, { result: { released: true } });
+});
+
+for (const [action, ErrorType] of [["detach", CdpSessionDetachedError], ["crash", CdpSessionCrashedError]]) {
   test(`pipe session ${action} rejects only that session's pending commands`, { timeout: 10_000 }, async t => {
     const client = await failureClient(t);
     const { sessionId } = await client.send("Target.attachToTarget", { targetId: "target-a", flatten: true });
@@ -123,7 +142,7 @@ for (const [action, name] of [["detach", "CdpSessionDetachedError"], ["crash", "
     await client.send("Fixture.release", { sessionId: "session-b" });
     await client.send("Fixture.release", {});
     const { error } = await affected.outcome;
-    assert.equal(error?.name, name);
+    assert.ok(error instanceof ErrorType, `expected ${ErrorType.name}, got ${error}`);
     assert.equal(error.sessionId, sessionId);
     assert.equal(error.targetId, "target-a");
     assert.deepEqual(await other.outcome, { result: { released: true } });

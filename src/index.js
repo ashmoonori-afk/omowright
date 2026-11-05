@@ -1,6 +1,13 @@
 export { connect, BrowserConnection, TabRepository } from "./connection.js";
 export { OMOWRIGHT_PAGE_CDP_METHODS } from "./cdp-methods.js";
-export { connectPipe, PipeCdpClient } from "./pipe.js";
+export {
+  CdpCommandTimeoutError,
+  CdpPipeClosedError,
+  CdpSessionCrashedError,
+  CdpSessionDetachedError,
+  connectPipe,
+  PipeCdpClient,
+} from "./pipe.js";
 export { connectNamed, listInstances } from "./instances.js";
 export { RunningBrowserError, connectRunningBrowser, findRunningBrowser, readDevToolsActivePort } from "./running-browser.js";
 export { SharedConnectionError } from "./shared-connections.js";

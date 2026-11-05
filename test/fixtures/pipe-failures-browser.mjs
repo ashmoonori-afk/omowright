@@ -1,4 +1,5 @@
 // CDP peer whose failures are triggered by commands, never by elapsed time.
+import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import { Socket } from "node:net";
 
@@ -45,6 +46,15 @@ input.on("data", chunk => {
       case "Fixture.end":
         output.end();
         break;
+      case "Fixture.shareOutput": {
+        // A process that outlives this one and keeps the parent's read pipe open,
+        // like a browser helper that inherited the CDP fd.
+        const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], {
+          stdio: ["ignore", "ignore", "ignore", "ignore", 4],
+        });
+        write({ id, result: { pid: holder.pid } });
+        break;
+      }
       case "Fixture.detach":
         write({ method: "Target.detachedFromTarget", params: { sessionId: params.sessionId } });
         write({ id, result: {} });
