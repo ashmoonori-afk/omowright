@@ -144,29 +144,6 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
 
-      # Temporary #233 oracle; removed after collecting the CI receipt.
-      - name: Lock error RED on base and GREEN on head
-        shell: bash
-        run: |
-          cp src/lock-backend-win32.js "$RUNNER_TEMP/lock-backend-win32-head.js"
-          git show 97f65ab:src/lock-backend-win32.js > src/lock-backend-win32.js
-          set +e
-          bun test test/instances.test.mjs --test-name-pattern 'Windows lock distinguishes'
-          red=$?
-          set -e
-          cp "$RUNNER_TEMP/lock-backend-win32-head.js" src/lock-backend-win32.js
-          test "$red" -ne 0
-          bun test test/instances.test.mjs --test-name-pattern 'Windows lock distinguishes'
-          node --test --test-name-pattern='Windows lock distinguishes' test/instances.test.mjs
-
-      - name: Mixed runtime race repeated twenty times per runner
-        shell: bash
-        run: |
-          for attempt in {1..20}; do
-            echo "RACE_ITERATION=$attempt"
-            bun test test/instances.test.mjs --test-name-pattern 'two processes racing.*mixed'
-            node --test --test-name-pattern='two processes racing.*mixed' test/instances.test.mjs
-          done
 
       # The page-video test (test/integration.test.mjs) needs ffmpeg with libvpx; without it the test skips.
       - name: Install ffmpeg

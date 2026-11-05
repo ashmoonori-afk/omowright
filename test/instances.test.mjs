@@ -805,8 +805,9 @@ test("concurrent connectNamed calls launch exactly one browser", async () => {
 // on one name through a stdin barrier, so nothing in a single process's memory
 // can serialize them: a lock that two holders can enter launches two browsers
 // here and leaves one of them unregistered.
-for (const crossRuntime of [false, true]) {
-test(`two processes racing one name launch exactly one browser (${crossRuntime ? "mixed" : "same"} runtimes)`, { timeout: 60_000 }, async (t) => {
+// Temporary #233 Windows oracle; restore one mixed-runtime case before merge.
+for (const [iteration, crossRuntime] of (process.platform === "win32" ? [false, ...Array(20).fill(true)] : [false, true]).entries()) {
+test(`two processes racing one name launch exactly one browser (${crossRuntime ? "mixed" : "same"} runtimes) iteration ${iteration}`, { timeout: 60_000 }, async (t) => {
   const secondRuntime = crossRuntime ? await otherRuntime(t) : process.execPath;
   if (!secondRuntime) return;
   const registryRoot = await mkdtemp(
