@@ -24,10 +24,14 @@ async function fixture(run) {
     const report = `({
       seed: window.seed, content: window.fromContent, file: window.fromFile,
       header: ${JSON.stringify(req.headers["x-setup"] ?? null)},
-      sum: typeof window.sum === "function" ? await window.sum(4, 5) : null
+      sum: typeof window.sum === "function" ? await window.sum(4, 5) : null,
+      binding: typeof window.who === "function" ? await window.who("fixture", location.pathname) : null
     })`;
     if (req.url.startsWith("/child")) {
       return res.end(`<!doctype html><script>
+        addEventListener("message", async event => {
+          if (event.data === "late-source") event.source.postMessage({ lateSource: await window.lateSource() }, event.origin);
+        });
         (async () => parent.postMessage({ setupReport: await ${report} }, "*"))();
       </script><p>child fixture</p>`);
     }
@@ -121,6 +125,45 @@ test("setExtraHTTPHeaders replaces headers for navigation, frames and later fetc
   await page.setExtraHTTPHeaders({});
   assert.equal(await page.evaluate("fetch('/headers').then(r => r.json()).then(h => h['x-setup'] === undefined)"), true);
   await assert.rejects(page.setExtraHTTPHeaders({ "X-Setup": 1 }), /string/i);
+}));
+
+test("exposeBinding supplies the real context, page and calling frame across documents", options, () => fixture(async ({ page, url }) => {
+  const off = page.on("console", () => {});
+  await page.exposeBinding("who", async (source, ...args) => {
+    assert.equal(source.context, page.context());
+    assert.equal(source.page, page);
+    assert.ok(page.frameManager.getFrame(source.frame.frameId));
+    return { url: source.frame.url(), main: source.frame.parentFrame() === null, args };
+  });
+  assert.deepEqual(await page.evaluate("who('current', 7)"), { url: "about:blank", main: true, args: ["current", 7] });
+  await assert.rejects(page.exposeFunction("who", () => 0), /already/i);
+  await assert.rejects(page.exposeBinding("who", () => 0), /already/i);
+  off();
+  for (const suffix of ["/", "/again"]) {
+    await page.goto(url + suffix, { waitUntil: "load" });
+    const reports = await page.evaluate("Promise.all([mainReport, childrenReady]).then(([main, children]) => [main, ...children])");
+    assert.deepEqual(reports[0].binding, { url: url + suffix, main: true, args: ["fixture", suffix] });
+    assert.equal(reports.length, 3);
+    for (const report of reports.slice(1)) {
+      assert.equal(new URL(report.binding.url).pathname, "/child");
+      assert.equal(report.binding.main, false);
+      assert.deepEqual(report.binding.args, ["fixture", "/child"]);
+    }
+  }
+  await page.exposeBinding("lateSource", source => source.frame.url());
+  assert.equal(await page.evaluate("document.querySelector('iframe').contentWindow.lateSource()"), url + "/child");
+  const crossOrigin = await page.evaluate(`new Promise(resolve => {
+    const frame = document.querySelectorAll("iframe")[1];
+    const listener = event => {
+      if (event.source !== frame.contentWindow || !event.data.lateSource) return;
+      removeEventListener("message", listener);
+      resolve(event.data.lateSource);
+    };
+    addEventListener("message", listener);
+    frame.contentWindow.postMessage("late-source", "*");
+  })`);
+  assert.equal(new URL(crossOrigin).hostname, "localhost");
+  assert.equal(new URL(crossOrigin).pathname, "/child");
 }));
 
 test("setViewportSize changes viewport and screen and updates the agent navigation pin", options, () => fixture(async ({ page, tabs, url }) => {

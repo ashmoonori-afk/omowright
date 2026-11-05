@@ -89,7 +89,14 @@ async function deliverBinding(page, state, binding, event, sessionId) {
   const call = JSON.parse(event.payload);
   let result;
   try {
-    result = { value: bindingValue(await binding.callback(...bindingValue(call.args, true))) };
+    const args = bindingValue(call.args, true);
+    if (binding.source) {
+      const frameId = page.frameManager.mainWorldContexts.get(`${sessionId}:${event.executionContextId}`);
+      const frame = page.frames().find(frame => frame.frameId === frameId);
+      if (!frame) throw Error("Binding caller frame is detached");
+      args.unshift({ context: page.context(), page, frame });
+    }
+    result = { value: bindingValue(await binding.callback(...args)) };
   } catch (error) {
     result = error instanceof Error
       ? { error: { name: error.name, message: error.message, stack: error.stack } }
@@ -174,13 +181,21 @@ export async function addInitScript(script, arg) {
 }
 
 export async function exposeFunction(name, callback) {
-  if (typeof name !== "string" || typeof callback !== "function") throw new TypeError("exposeFunction requires a name and function");
-  const state = setupState(this);
+  await registerBinding(this, name, callback, false);
+}
+
+export async function exposeBinding(name, callback) {
+  await registerBinding(this, name, callback, true);
+}
+
+async function registerBinding(page, name, callback, source) {
+  if (typeof name !== "string" || typeof callback !== "function") throw new TypeError(`${source ? "exposeBinding" : "exposeFunction"} requires a name and function`);
+  const state = setupState(page);
   if ([...state.bindings.values()].some(binding => binding.name === name)) throw Error(`Function "${name}" has already been registered`);
   const internalName = `__omowright_binding_${randomUUID().replaceAll("-", "")}`;
-  state.bindings.set(internalName, { name, callback });
+  state.bindings.set(internalName, { name, callback, source });
   state.scripts.push({ source: bindingScript(name, internalName), binding: true });
-  await updateSessions(this, state);
+  await updateSessions(page, state);
 }
 
 export async function setExtraHTTPHeaders(headers) {

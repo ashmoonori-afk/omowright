@@ -106,9 +106,11 @@ export async function requestHuman(page, { prompt, until, timeoutMs = 300000, po
 
     for (;;) {
       if (signal?.aborted) return finish("cancelled", "signal");
-      if (Date.now() - started >= timeoutMs) return finish("timed_out", "timed_out");
+      // Check the conditions before the deadline: a slow bringToFront or banner
+      // injection must not time the wait out before its first check.
       if (await matchesUntil(page, until)) return finish("continued", "until");
       if (await isDone(page)) return finish("continued", "done-button");
+      if (Date.now() - started >= timeoutMs) return finish("timed_out", "timed_out");
       // Human waits are idle time, not a race against a specific event; a timer
       // poll loop is the correct tool here.
       await ensureBanner(page, prompt);

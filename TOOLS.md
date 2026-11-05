@@ -82,9 +82,12 @@ running Chromium DevTools endpoint).
   browser promise and a thrown error rejects it. Duplicate names reject.
   Supports JSON-like values, `undefined`, non-finite numbers, `-0` and bigints.
   This member enables Runtime on demand and keeps it enabled for the binding's
-  lifetime; ordinary page setup does not enable Runtime. `exposeBinding` needs
-  the BrowserContext source contract tracked in
-  [#208](https://github.com/code-yeongyu/omowright/issues/208).
+  lifetime; ordinary page setup does not enable Runtime.
+- `page.exposeBinding(name, callback)` — like `exposeFunction`, but the host
+  callback receives `{ context, page, frame }` before the browser arguments.
+  `context` is the real `page.context()` object and `frame` is the calling
+  frame, including a same-process or out-of-process child. Bindings survive
+  frame and page navigation and are installed in existing frames.
 - `page.setExtraHTTPHeaders(headers)` — replace the page's extra request
   headers, including frame requests; values must be strings. Pass `{}` to
   clear them. Network ownership is shared with readiness and request capture,
@@ -99,6 +102,32 @@ running Chromium DevTools endpoint).
   `forcedColors` accepts `"active"` or `"none"`; `contrast` accepts `"more"` or
   `"no-preference"`. Omitted properties retain their overrides; `null` clears
   that property's override. Applies to current and future frame sessions.
+- `page.context()` — the page's browser context (shared by pages in the same
+  context on this connection). Cookie reads, writes and clears are scoped to
+  that CDP browser context, including when attached to an incognito tab.
+  The supported [Playwright context methods](https://playwright.dev/docs/api/class-browsercontext)
+  are:
+  - `context.cookies(urls?)` — all cookies, or those affecting a URL string or
+    array of URLs. Returns `{ name, value, domain, path, expires, httpOnly,
+    secure, sameSite, partitionKey? }`; `expires` is Unix seconds (`-1` for a
+    session cookie).
+  - `context.addCookies(cookies)` — each cookie requires `name`, `value` and
+    either `url` or both `domain` and `path`. Optional fields: `expires`,
+    `httpOnly`, `secure`, `sameSite` (`"Strict"`, `"Lax"`, `"None"`) and
+    `partitionKey`. Unlike raw-export `injectCookies`, this preserves
+    same-name cookies at different paths.
+  - `context.clearCookies({ name?, domain?, path? }?)` — clear all cookies or
+    only those matching every supplied string or RegExp filter.
+  - `context.storageState({ path? }?)` — return `{ cookies, origins }`, where
+    each origin is `{ origin, localStorage: [{ name, value }] }`. Includes
+    localStorage for HTTP(S) origins observed by attached pages, even after
+    navigating away or closing them. A temporary, intercepted blank page reads
+    storage without running those sites' scripts or navigating existing pages.
+    With `path`, also write the same JSON, creating parent directories; relative
+    paths resolve from the current working directory. IndexedDB is not included.
+    Restore cookies with `addCookies(state.cookies)` and localStorage by
+    navigating a fresh page to each origin and setting its saved entries.
+  - `context.newPage()` — create an agent-owned blank page in this context.
 - `page.waitForRequest(urlOrPredicate, { timeout? })` /
   `page.waitForResponse(urlOrPredicate, { timeout? })` — wait for the next
   matching request or response headers (default timeout: 30000ms). Match an
@@ -357,7 +386,7 @@ loop; the module files next to it are implementation detail.
   refs from `session.observe()` are `@eN` strings for `session.click("@e3")`;
   `bskSnapshot` refs are clicked through `css[ref]`.
 - Raw CDP `page._sendToTarget(method, params)` exists but is an escape hatch;
-  prefer the tools above. There is no `page.context()`.
+  prefer the tools above.
 
 ## Dialogs (alert / confirm / prompt / beforeunload)
 

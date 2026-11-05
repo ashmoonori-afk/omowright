@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -429,27 +431,105 @@ test("restrictToOwner on win32 runs whoami and icacls by absolute path with an o
 // exactly what restrictToOwner would is read once and left alone; anything
 // else is granted as before. A file created inside a directory this process
 // restricted inherits that grant, so restrictNewFileToOwner runs no tool for it.
-test("restrictToOwner on win32 leaves an already owner-only directory alone, and new files in it inherit", async () => {
+// Owner-only means no allow entry for anyone outside the user and the trusted set (SYSTEM, Administrators and
+// TrustedInstaller, plus OWNER RIGHTS and CREATOR OWNER); a protected DACL that also grants someone else is granted
+// again, and that trustee's explicit grants are removed, since the grant itself keeps explicit entries.
+test("restrictToOwner on win32 leaves an already owner-only directory alone", async () => {
+  const TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+  // [label, DACL, directories granted, removal argv, user SID]
   const cases = [
-    ["protected, user granted (OI)(CI)F", `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;${SID})`, []],
-    ["protected, the built-in Administrator account as LA", "D:PAI(A;OICI;FA;;;LA)", [], "S-1-5-21-1-2-3-500"],
-    ["still inheriting", `D:AI(A;OICI;FA;;;${SID})(A;OICIID;FA;;;BU)`, ["C:\\d"]],
-    ["protected, user grant without inheritance", `D:PAI(A;;FA;;;${SID})`, ["C:\\d"]],
-    ["protected, user granted twice", `D:PAI(A;OICI;FA;;;${SID})(A;;0x1200a9;;;${SID})`, ["C:\\d"]],
-    ["no ACL on the volume", "D:NO_ACCESS_CONTROL", ["C:\\d"]],
+    ["protected, user granted (OI)(CI)F", `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;${SID})`, [], []],
+    ["protected, the built-in Administrator account as LA", "D:PAI(A;OICI;FA;;;LA)", [], [], "S-1-5-21-1-2-3-500"],
+    [
+      "protected, user plus the trusted set",
+      `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;${TRUSTED_INSTALLER})(A;;FA;;;OW)(A;OICIIO;FA;;;CO)(A;OICI;FA;;;${SID})`,
+      [],
+      [],
+    ],
+    ["protected, denying someone else", `D:PAI(D;OICI;FA;;;BG)(A;OICI;FA;;;${SID})`, [], []],
+    ["still inheriting", `D:AI(A;OICI;FA;;;${SID})(A;OICIID;FA;;;BU)`, ["C:\\d"], []],
+    ["protected, user grant without inheritance", `D:PAI(A;;FA;;;${SID})`, ["C:\\d"], []],
+    ["protected, user granted twice", `D:PAI(A;OICI;FA;;;${SID})(A;;0x1200a9;;;${SID})`, ["C:\\d"], []],
+    [
+      "protected, also granting Everyone, Users and another account",
+      `D:PAI(A;OICI;FA;;;${SID})(A;OICI;0x1200a9;;;WD)(A;;FA;;;BU)(A;OICI;FA;;;S-1-5-21-9-9-9-1002)(A;;FA;;;WD)`,
+      ["C:\\d"],
+      [["C:\\d", "/remove:g", "*WD", "*BU", "*S-1-5-21-9-9-9-1002", "/Q"]],
+    ],
+    // A conditional ACE nests parentheses and may quote them; an entry after it still counts.
+    [
+      "protected, a conditional entry before a grant to Everyone",
+      `D:PAI(A;OICI;FA;;;${SID})(XA;OICI;FA;;;SY;(@User.title == ")" || Member_of {SID(BA)}))(A;OICI;FA;;;WD)`,
+      ["C:\\d"],
+      [["C:\\d", "/remove:g", "*WD", "/Q"]],
+    ],
+    // An integrity label or audit entries follow the DACL on the same line.
+    ["protected, user granted, with a SACL", `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;${SID})S:AI(ML;OICI;NW;;;LW)`, [], []],
+    ["no ACL on the volume", "D:NO_ACCESS_CONTROL", ["C:\\d"], []],
   ];
-  for (const [label, sddl, expected, sid = SID] of cases) {
+  for (const [label, sddl, expected, removals, sid = SID] of cases) {
     const { calls, run } = spawner({ sddl, whoami: `"host\\me","${sid}"\r\n` });
     await restrictToOwner("C:\\d", "directory", { platform: "win32", run });
     assert.deepEqual(grants(calls), expected, label);
+    assert.deepEqual(calls.filter(({ args }) => args[1] === "/remove:g").map(({ args }) => args), removals, label);
     assert.equal(calls.filter(({ args }) => args[1] === "/save").length, 1, label);
   }
+});
 
-  const { calls, run } = spawner();
-  await restrictToOwner("C:\\owned", "directory", { platform: "win32", run });
-  await restrictNewFileToOwner("C:\\owned\\a.lock.tmp", { platform: "win32", run });
-  await restrictNewFileToOwner("C:\\other\\a.lock.tmp", { platform: "win32", run });
-  assert.deepEqual(grants(calls), ["C:\\owned", "C:\\other\\a.lock.tmp"]);
+// A file created inside a directory this process restricted inherits that grant, so restrictNewFileToOwner runs no
+// tool for it. The memo follows the directory itself (volume and file id), not its name: a directory that took the
+// restricted one's name never got the grant, so files created in it need their own.
+test("restrictNewFileToOwner on win32 relies on the grant only inside the directory restrictToOwner handled", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "omowright-acl-memo-"));
+  try {
+    const [owned, other, replacement] = ["owned", "other", "replacement"].map((name) => path.join(root, name));
+    for (const dir of [owned, other, replacement]) mkdirSync(dir);
+    const { calls, run } = spawner();
+    await restrictToOwner(owned, "directory", { platform: "win32", run });
+    await restrictNewFileToOwner(path.join(owned, "a.lock.tmp"), { platform: "win32", run });
+    await restrictNewFileToOwner(path.join(other, "a.lock.tmp"), { platform: "win32", run });
+    rmSync(owned, { recursive: true });
+    renameSync(replacement, owned);
+    await restrictNewFileToOwner(path.join(owned, "b.lock.tmp"), { platform: "win32", run });
+    assert.deepEqual(grants(calls), [owned, path.join(other, "a.lock.tmp"), path.join(owned, "b.lock.tmp")]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A fresh temp directory in which names differing only in case are different entries, or null. Linux file systems are
+// case-sensitive; Windows turns it on per directory with fsutil, which a host may not support.
+function caseSensitiveTempDir() {
+  const dir = mkdtempSync(path.join(tmpdir(), "omowright-acl-case-"));
+  if (process.platform === "win32") {
+    spawnSync(windowsSystemTool("fsutil.exe"), ["file", "setCaseSensitiveInfo", dir, "enable"], { windowsHide: true });
+  }
+  mkdirSync(path.join(dir, "probe"));
+  const caseSensitive = !existsSync(path.join(dir, "PROBE"));
+  rmSync(caseSensitive ? path.join(dir, "probe") : dir, { recursive: true, force: true });
+  return caseSensitive ? dir : null;
+}
+const CASE_SENSITIVE_DIRS = (() => {
+  const dir = caseSensitiveTempDir();
+  if (dir) rmSync(dir, { recursive: true, force: true });
+  return dir !== null;
+})();
+
+// On a case-sensitive directory (NTFS can have them too) two names that differ only in case are two directories.
+test("restrictNewFileToOwner on win32 tells apart directories whose names differ only in case", {
+  skip: !CASE_SENSITIVE_DIRS && "no case-sensitive directory available on this host",
+}, async () => {
+  const root = caseSensitiveTempDir();
+  try {
+    const [lower, upper] = ["state", "STATE"].map((name) => path.join(root, name));
+    for (const dir of [lower, upper]) mkdirSync(dir);
+    const { calls, run } = spawner();
+    await restrictToOwner(lower, "directory", { platform: "win32", run });
+    await restrictNewFileToOwner(path.join(upper, "a.lock.tmp"), { platform: "win32", run });
+    assert.deepEqual(grants(calls), [lower, path.join(upper, "a.lock.tmp")]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // The same contract against the real icacls output on a Windows host.
@@ -468,6 +548,13 @@ test("restrictToOwner on Windows re-reads an owner-only directory instead of re-
     calls.length = 0;
     await restrictToOwner(dir, "directory", { run });
     assert.deepEqual(grants(calls), []);
+    await assertOwnerOnly([dir, "directory"]);
+    // An explicit grant to Everyone keeps the DACL protected, but it is no longer owner-only: the directory is
+    // granted again and the extra grant removed (icacls /save names Everyone by its SDDL alias WD).
+    execFileSync(windowsSystemTool("icacls.exe"), [dir, "/grant", "*S-1-1-0:(OI)(CI)RX", "/Q"], { windowsHide: true });
+    calls.length = 0;
+    await restrictToOwner(dir, "directory", { run });
+    assert.deepEqual(grants(calls), [dir]);
     await assertOwnerOnly([dir, "directory"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
