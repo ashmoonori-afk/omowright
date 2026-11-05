@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { connectPipe, compactSnapshot, createAgentTabs } from "../src/index.js";
+import { PAGE_EVENT_NAMES, connectPipe, compactSnapshot, createAgentTabs } from "../src/index.js";
 import { removeTreeSync } from "./fixtures/remove-tree.mjs";
 import { windowsSystemTool } from "../src/owner-only.js";
 
@@ -649,4 +649,83 @@ test("role, text and label locators pierce nested open shadows but not closed on
     await browser.close();
     removeTreeSync(ud);
   }
+});
+
+async function withPipeBrowser(prefix, run) {
+  const ud = mkdtempSync(path.join(tmpdir(), prefix));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    await run(browser);
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+  }
+}
+
+// Public API contract: page.on/off/waitForEvent accept exactly the exported PAGE_EVENT_NAMES, so a typo or an
+// unsupported Playwright event fails loudly instead of subscribing to something that never fires.
+test("page events refuse unknown names and list the supported ones", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  await withPipeBrowser("omowright-page-event-names-", async browser => {
+    const page = await browser.newTab("about:blank");
+    for (const name of PAGE_EVENT_NAMES) page.on(name, () => {})();
+    const unknown = error => error instanceof TypeError
+      && PAGE_EVENT_NAMES.every(name => error.message.includes(name));
+    assert.throws(() => page.on("pageerorr", () => {}), error => unknown(error) && error.message.includes("pageerorr"));
+    assert.throws(() => page.off("worker", () => {}), unknown);
+    await assert.rejects(page.waitForEvent("requestfailed", { timeout: 1000 }), unknown);
+  });
+});
+
+// Public event contract: pageerror delivers uncaught page exceptions as Errors, never one thrown before the
+// subscription (Runtime.enable replays those), and Runtime (which pages can detect) runs only while a listener
+// exists. Each synchronous throw is followed by a later timer in the same evaluate, so the browser has reported
+// it on the raw CDP stream, if Runtime was on, before evaluate resolves.
+test("pageerror delivers uncaught exceptions only while subscribed", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  await withPipeBrowser("omowright-pageerror-", async browser => {
+    const page = await browser.newTab("about:blank");
+    const sessionId = await page.resolveSessionId();
+    const reported = [];
+    page.cdp.on("Runtime.exceptionThrown", (event, meta) => {
+      if (meta.sessionId === sessionId) reported.push(event.exceptionDetails.exception?.description?.split("\n")[0]);
+    });
+    const throwLater = expression => page.evaluate(`setTimeout(() => { ${expression} }); new Promise(resolve => setTimeout(resolve))`);
+
+    await throwLater("throw new TypeError('before')");
+    assert.deepEqual(reported, [], "Runtime stays off without a pageerror listener");
+
+    const errors = [];
+    const listener = error => errors.push(error);
+    page.on("pageerror", listener);
+    const first = page.waitForEvent("pageerror", { timeout: 5000 });
+    await throwLater("throw new TypeError('first')");
+    await first;
+    const rejected = page.waitForEvent("pageerror", { timeout: 5000 });
+    await throwLater("Promise.reject(new RangeError('rejected'))");
+    await rejected;
+    assert.deepEqual(errors.map(error => [error instanceof Error, error.name, error.message]),
+      [[true, "TypeError", "first"], [true, "RangeError", "rejected"]], "only exceptions thrown while subscribed are delivered");
+    assert.match(errors[0].stack, /^TypeError: first\n\s+at /);
+
+    page.off("pageerror", listener);
+    await throwLater("throw new TypeError('after')");
+    assert.equal(errors.length, 2);
+    assert.ok(!reported.includes("TypeError: after"), "Runtime is disabled once the last listener leaves");
+  });
+});
+
+// Public event contract: close fires for page.close() and also when the tab goes away without it (window.close(), the
+// user, another client), and the page is disposed with it instead of failing later on a lost session.
+test("close fires for page.close() and when a page closes itself", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  await withPipeBrowser("omowright-page-close-", async browser => {
+    const closing = await browser.newTab("about:blank");
+    const closed = closing.waitForEvent("close", { timeout: 10000 });
+    await closing.close();
+    await closed;
+
+    const page = await browser.newTab("about:blank");
+    const selfClosed = page.waitForEvent("close", { timeout: 10000 });
+    await page.evaluate("window.close()");
+    await selfClosed;
+    await assert.rejects(page.evaluate("1"), /disposed/);
+  });
 });
