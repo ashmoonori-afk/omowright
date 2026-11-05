@@ -14,7 +14,7 @@ test("creates owned background tab and repins after main navigation", async () =
   const tab = await tabs.create();
   assert.deepEqual(tab.viewport, DEFAULT_AGENT_VIEWPORT); assert.deepEqual(tabs.get("owned").viewport, tab.viewport);
   const create = c.cdp.calls.find(call => call.method === "Target.createTarget");
-  assert.deepEqual(create.params, { url: "about:blank", background: true }); assert.ok(create.options?.capability);
+  assert.deepEqual(create.params, { url: "about:blank", background: true, newWindow: true }); assert.ok(create.options?.capability);
   assert.equal(c.cdp.calls.some(call => call.method === "Target.activateTarget"), true);
   c.page.events.emit("framenavigated", { frameId: "main", parentFrameId: null });
   await Promise.resolve(); await Promise.resolve();
@@ -93,7 +93,7 @@ test("BrowserConnection exposes newTab on the attach path", async () => {
   const opened = await connection.newTab();
   assert.equal(opened, page);
   const create = calls.find(call => call.method === "Target.createTarget");
-  assert.deepEqual(create.params, { url: "about:blank", background: true });
+  assert.deepEqual(create.params, { url: "about:blank", background: true, newWindow: true });
   assert.ok(create.options?.capability, "createTarget must carry the reserved capability");
   const order = calls.map(call => call.method);
   assert.ok(order.indexOf("Target.activateTarget") < order.indexOf("attachPage"), `activation must precede attach: ${order.join(", ")}`);

@@ -145,7 +145,8 @@ sleep to tune.
   `Browser.setDownloadBehavior`).
 - **Agent signals.** `createEvents()` pushes `tabOpened`, `popupOpened`,
   `downloadStarted` / `downloadFinished` and friends, so agents stop polling.
-  `createAgentTabs()` opens every tab in the background and never steals focus.
+  `createAgentTabs()` opens every tab in its own background window, so it never
+  steals focus. Headed rendering and screenshots are verified on Linux and macOS.
 - **Frames and overlays.** OOPIF-aware snapshots, `describeLayers()` for the
   dialog or toast that swallowed your click, and a dialog policy for
   `alert` / `confirm` / `prompt`.

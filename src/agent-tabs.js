@@ -38,7 +38,11 @@ export class AgentTabManager {
     if (this.#disposed) throw Error("Agent tab manager is disposed");
     await this.ready;
     const viewport = { ...this.viewport, ...(options.viewport ?? {}) };
-    const result = await this.#connection.cdp.send("Target.createTarget", { url, background: true }, undefined, { capability: CAPABILITY });
+    // A headed browser keeps a background tab in a shared window hidden: it never
+    // paints (Page.captureScreenshot hangs) and requestAnimationFrame never fires.
+    // Its own window doesn't take focus from the user's tab, and the tab renders
+    // (verified headed on Linux and macOS).
+    const result = await this.#connection.cdp.send("Target.createTarget", { url, background: true, newWindow: true }, undefined, { capability: CAPABILITY });
     const targetId = result.targetId;
     // CloakBrowser headless defers renderer startup for background targets until
     // activation; activating before attach avoids Page.enable timing out.
