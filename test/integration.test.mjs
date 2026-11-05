@@ -38,7 +38,7 @@ function findFfmpeg() {
 
 const FFMPEG = findFfmpeg();
 
-for (const mode of ["missing", "early-exit", "early-success"]) {
+for (const mode of ["missing", "early-exit", "early-success", "stalled"]) {
   // The successful early-close case protects exit-status handling independently
   // of the normal screencast test, while decoding an actual encoder output.
   test(`page video ${mode} encoder settles without crashing its host`, {
