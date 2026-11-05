@@ -53,11 +53,17 @@ function startFixtureServer() {
 
 async function launch() {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-layers-test-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
+  try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
+  } catch (error) {
+    removeTreeSync(ud);
+    throw error;
+  }
   return {
     connection,
     cleanup: async () => {
@@ -105,8 +111,10 @@ test("layersHeader formats none and blocking lines", () => {
 
 test("describeLayers and snapshotWithLayers classify live overlays", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const fixtures = await startFixtureServer();
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     const page = (await createAgentTabs(connection).create("about:blank")).page;
 
     await page.goto(fixtures.urlFor("layers-dialog.html"));
@@ -139,7 +147,7 @@ test("describeLayers and snapshotWithLayers classify live overlays", { skip: !SH
     const toastLayers = await describeLayers(page);
     assert.equal(toastLayers.blocking, null, "a toast must not register as a blocking layer");
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     await fixtures.close();
   }
 });

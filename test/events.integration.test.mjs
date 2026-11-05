@@ -16,9 +16,12 @@ const BROWSER = process.env.CLOAKBROWSER_BIN ?? browserPath();
 
 test("pipe event bridge creates and closes an owned background page", { skip: !BROWSER && "no Chromium binary found", timeout: 60000 }, async () => {
   const profile = mkdtempSync(path.join(tmpdir(), "omowright-events-live-"));
-  const connection = await connectPipe({ browserPath: BROWSER, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${profile}`], storageRoot: profile, commandTimeoutMs: 60_000 });
-  const events = createEvents(connection); const tabs = createAgentTabs(connection);
+  let connection;
+  let events;
+  let tabs;
   try {
+    connection = await connectPipe({ browserPath: BROWSER, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${profile}`], storageRoot: profile, commandTimeoutMs: 60_000 });
+    events = createEvents(connection); tabs = createAgentTabs(connection);
     await Promise.all([events.ready, tabs.ready]);
     const opened = events.waitForEvent("tabOpened", { timeout: 10000, predicate: value => value.type === "page" });
     const tab = await tabs.create();
@@ -27,5 +30,5 @@ test("pipe event bridge creates and closes an owned background page", { skip: !B
     assert.ok(openedPayload.url === "about:blank" || openedPayload.url === "", `unexpected initial URL: ${openedPayload.url}`);
     const closed = events.waitForEvent("tabClosed", { timeout: 10000, predicate: value => value.targetId === tab.targetId });
     await tabs.close(tab); assert.equal((await closed).targetId, tab.targetId);
-  } finally { await events.dispose(); await tabs.dispose({ closeOwned: false }); await connection.close(); removeTreeSync(profile); }
+  } finally { await events?.dispose(); await tabs?.dispose({ closeOwned: false }); await connection?.close(); removeTreeSync(profile); }
 });

@@ -63,13 +63,14 @@ test("page video start and stop write a playable clip through the package entry"
   timeout: 60000,
 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-video-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   const originalPath = process.env.PATH;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     // Keep the qualified binary in place: Windows package-manager shims and
     // shared builds can depend on files next to the executable.
     process.env.PATH = `${path.dirname(FFMPEG)}${path.delimiter}${originalPath ?? ""}`;
@@ -92,7 +93,7 @@ test("page video start and stop write a playable clip through the package entry"
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
   }
 });
@@ -101,8 +102,9 @@ test("page video start and stop write a playable clip through the package entry"
 // This fails if Runtime capture or page event forwarding is removed; console.logs() cannot prove delivery.
 test("console events stream with type and text and respect page scope and off", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-console-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab("about:blank");
     const other = await browser.newTab("about:blank");
     const messages = [];
@@ -124,7 +126,7 @@ test("console events stream with type and text and respect page scope and off", 
     await page.goto("data:text/html,<script>console.log('navigated')</script><p>ok</p>", { waitUntil: "load" });
     assert.equal((await onLoad).text(), "navigated");
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
   }
 });
@@ -133,8 +135,9 @@ test("console events stream with type and text and respect page scope and off", 
 // must agree; a DOM-only mock would hide the failure. No test-only production hook is needed.
 test("CSS locators pierce nested open shadows for collections and actions", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-shadow-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab("about:blank");
     await page.evaluate(() => {
       document.body.innerHTML = '<div id="host"></div><button class="item">Light</button><div id="closed"></div>';
@@ -163,7 +166,7 @@ test("CSS locators pierce nested open shadows for collections and actions", { sk
       assert.equal(await page.locator("#a").locator(":scope > span").textContent(), "Scoped");
     }
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
   }
 });
@@ -172,8 +175,9 @@ test("CSS locators pierce nested open shadows for collections and actions", { sk
 // and when a large open root is present. Small DOM fixtures cannot catch argument spreading.
 test("CSS locators query large light and shadow DOMs without argument overflow", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-large-dom-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab("about:blank");
     await page.evaluate(() => {
       document.body.innerHTML = "<i></i>".repeat(150000) + '<button class="large-target">Light</button>';
@@ -188,7 +192,7 @@ test("CSS locators query large light and shadow DOMs without argument overflow",
     assert.deepEqual(await page.locator(".large-target").evaluateAll(nodes => nodes.map(node => node.textContent)), ["Light", "Shadow"]);
     assert.equal(await page.locator(".large-target").last().textContent(), "Shadow");
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
   }
 });
@@ -197,8 +201,9 @@ test("CSS locators query large light and shadow DOMs without argument overflow",
 // Count calls instead of measuring elapsed time, so host load cannot make the regression pass.
 test("shadow-free CSS queries keep selector matching native", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-native-query-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab("about:blank");
     await page.evaluate(() => { document.body.innerHTML = '<section id="scope">' + '<i class="item"></i>'.repeat(1000) + '<span id="target">Native</span></section>'; });
     const frameId = page.mainFrame().frameId;
@@ -220,7 +225,7 @@ test("shadow-free CSS queries keep selector matching native", { skip: !SHELL && 
       });
     }
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
   }
 });
@@ -282,12 +287,13 @@ function listeningTcpSockets(pid) {
 test("pipe transport drives Chromium with zero listening TCP ports", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-test-"));
   const fixture = await serveFixturePage();
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const pid = connection.browserProcess?.pid;
     assert.ok(pid > 0, "browser process pid");
 
@@ -310,7 +316,7 @@ test("pipe transport drives Chromium with zero listening TCP ports", { skip: !SH
     const compactBytes = Buffer.byteLength(tree, "utf8");
     assert.ok(compactBytes < fullBytes, "compact tree smaller than full snapshot");
   } finally {
-    await connection.close();
+    await connection?.close();
     await new Promise(resolve => fixture.server.close(resolve));
     removeTreeSync(ud);
   }
@@ -330,8 +336,9 @@ window.rerender = () => {
 };
 </script>`;
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-stale-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab(`data:text/html,${encodeURIComponent(html)}`);
     const { refs } = await page.snapshot();
     const refOf = (name, nth) => Object.entries(refs).filter(([, meta]) => meta.role === "button" && meta.name === name)[nth][0];
@@ -342,7 +349,7 @@ window.rerender = () => {
     await page.locator(save).click({ timeout: 5000 });
     assert.equal(await page.evaluate("document.getElementById('log').textContent"), "save;");
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
   }
 });
@@ -351,8 +358,9 @@ window.rerender = () => {
 // replaced element gets a new ref. This also exercises the allocator without changing recovery.
 test("snapshot refs survive fills and insertions but not identity changes", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-refs-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab('data:text/html,<label>Name<input></label><button>Save</button>');
     const before = await page.snapshot();
     const refOf = (snapshot, name) => Object.entries(snapshot.refs).find(([, meta]) => meta.name === name)[0];
@@ -370,7 +378,7 @@ test("snapshot refs survive fills and insertions but not identity changes", { sk
     await page.locator(name).fill("Grace");
     assert.equal(await page.evaluate("document.querySelector('input').value"), "Grace");
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
   }
 });
@@ -379,7 +387,7 @@ test("snapshot refs survive fills and insertions but not identity changes", { sk
 // boundary. Existing snapshots only assert full trees, so ignoring diff would otherwise pass.
 test("snapshot diffs describe form changes and reset on navigation", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-diff-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   const html = `<main>
 <section role="region" aria-label="Notice" id="banner"><button>Dismiss</button></section>
 <form>${[
@@ -400,6 +408,7 @@ test("snapshot diffs describe form changes and reset on navigation", { skip: !SH
 <section id="extra" hidden><input aria-label="Extra details"></section></form></main>`;
   const url = `data:text/html,${encodeURIComponent(html)}`;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab(url);
     const first = await page.snapshot({ diff: true });
     assert.equal(first.full, true);
@@ -469,19 +478,20 @@ test("snapshot diffs describe form changes and reset on navigation", { skip: !SH
     assert.equal(text.reason, "unreferenced-content");
     assert.match(text.tree, /After/);
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
   }
 });
 
 test("JavaScript dialogs are auto-accepted and surfaced as events", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-dialog-test-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
-    storageRoot: ud,
-  });
+  let connection;
   try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`],
+      storageRoot: ud,
+    });
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     const events = [];
     page.on("dialog", dialog => events.push(dialog));
@@ -500,7 +510,7 @@ test("JavaScript dialogs are auto-accepted and surfaced as events", { skip: !SHE
     assert.ok(Date.now() - t0 < 15000, "goto with a load-time dialog completes via the content probe");
     assert.equal(await page.evaluate("document.readyState"), "complete");
   } finally {
-    await connection.close();
+    await connection?.close();
     removeTreeSync(ud);
   }
 });
@@ -521,8 +531,9 @@ test("goto resolves on a loaded sparse page and on a frameset page", { skip: !SH
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-sparse-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab("about:blank");
     for (const route of ["/sparse", "/frameset"]) {
       const started = Date.now();
@@ -533,7 +544,7 @@ test("goto resolves on a loaded sparse page and on a frameset page", { skip: !SH
     }
     assert.ok((await page.snapshot()).tree.length > 0);
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
     await new Promise(resolve => server.close(resolve));
   }
@@ -579,8 +590,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-hydration-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab("about:blank");
     await page.goto(`${origin}/hydrate`);
     assert.match(compactSnapshot(await page.snapshot()), /heading "Hydrated and settled"/);
@@ -593,7 +605,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     assert.match(compactSnapshot(await page.snapshot()), /Skip to content/);
   } finally {
     for (const timer of timers) clearTimeout(timer);
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
@@ -605,8 +617,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 // run separate in-page queries, so both are exercised against a real browser.
 test("role, text and label locators pierce nested open shadows but not closed ones", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-shadow-role-"));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab("about:blank");
     await page.evaluate(() => {
       document.body.innerHTML = '<button>Save light</button><div id="host"></div><div id="closed"></div>';
@@ -646,18 +659,19 @@ test("role, text and label locators pierce nested open shadows but not closed on
     });
     assert.equal(await page.getByText("Bulk paragraph").count(), 1);
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
   }
 });
 
 async function withPipeBrowser(prefix, run) {
   const ud = mkdtempSync(path.join(tmpdir(), prefix));
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
     await run(browser);
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(ud);
   }
 }

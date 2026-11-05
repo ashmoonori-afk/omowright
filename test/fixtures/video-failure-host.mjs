@@ -38,12 +38,13 @@ childProcess.spawn = (command, args, options) => {
 };
 syncBuiltinESMExports();
 const { connectPipe, VideoRecordingError } = await import("../../src/index.js");
-const connection = await connectPipe({
-  browserPath: shell,
-  browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${root}`],
-  storageRoot: root,
-});
+let connection;
 try {
+  connection = await connectPipe({
+    browserPath: shell,
+    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${root}`],
+    storageRoot: root,
+  });
   const page = await connection.newTab("about:blank");
   const video = page.video();
   let failure;
@@ -82,7 +83,7 @@ try {
   }
   console.log(JSON.stringify({ mode, error: failure?.name ?? null, closed }));
 } finally {
-  await connection.close();
+  await connection?.close();
   childProcess.spawn = spawn;
   syncBuiltinESMExports();
   removeTreeSync(root);

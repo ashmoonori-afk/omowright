@@ -117,12 +117,14 @@ test("the page API runs through an endpoint that allows only OMOWRIGHT_PAGE_CDP_
   const userDataDir = mkdtempSync(path.join(tmpdir(), "omowright-scoped-"));
   const site = createServer((_req, res) => res.writeHead(200, { "content-type": "text/html" }).end(PAGE));
   const sitePort = await listen(site);
-  const upstream = await launchChromium(userDataDir);
-  const endpoint = await startScopedEndpoint(upstream);
   const forceRefreshes = [];
   let token = "Bearer scoped-stale";
+  let upstream;
+  let endpoint;
   let connection;
   try {
+    upstream = await launchChromium(userDataDir);
+    endpoint = await startScopedEndpoint(upstream);
     connection = await connect(endpoint.url, {
       storageRoot: userDataDir,
       client: {
@@ -166,10 +168,12 @@ test("the page API runs through an endpoint that allows only OMOWRIGHT_PAGE_CDP_
     assert.equal(endpoint.commands.filter(method => method === "Runtime.disable").length, 1);
   } finally {
     await connection?.close().catch(() => {});
-    await endpoint.close();
-    const exited = upstream.child.exitCode === null ? once(upstream.child, "exit") : Promise.resolve();
-    upstream.child.kill();
-    await exited;
+    await endpoint?.close();
+    if (upstream) {
+      const exited = upstream.child.exitCode === null ? once(upstream.child, "exit") : Promise.resolve();
+      upstream.child.kill();
+      await exited;
+    }
     site.close();
     removeTreeSync(userDataDir);
   }
@@ -178,10 +182,12 @@ test("the page API runs through an endpoint that allows only OMOWRIGHT_PAGE_CDP_
 // Optional console capture must not turn an older endpoint's Runtime refusal into a page setup failure.
 test("page setup and evaluation survive an endpoint refusing Runtime.enable", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const userDataDir = mkdtempSync(path.join(tmpdir(), "omowright-runtime-refusal-"));
-  const upstream = await launchChromium(userDataDir);
-  const endpoint = await startScopedEndpoint(upstream, { refuseRuntime: true });
+  let upstream;
+  let endpoint;
   let connection;
   try {
+    upstream = await launchChromium(userDataDir);
+    endpoint = await startScopedEndpoint(upstream, { refuseRuntime: true });
     connection = await connect(endpoint.url, { storageRoot: userDataDir, client: { authorizer: { resolveAuthorization: async () => GOOD } } });
     const { page } = await createAgentTabs(connection).create("about:blank");
     assert.equal(await page.evaluate("21 * 2"), 42);
@@ -193,10 +199,12 @@ test("page setup and evaluation survive an endpoint refusing Runtime.enable", { 
     assert.deepEqual(endpoint.refused, ["Runtime.enable"]);
   } finally {
     await connection?.close().catch(() => {});
-    await endpoint.close();
-    const exited = upstream.child.exitCode === null ? once(upstream.child, "exit") : Promise.resolve();
-    upstream.child.kill();
-    await exited;
+    await endpoint?.close();
+    if (upstream) {
+      const exited = upstream.child.exitCode === null ? once(upstream.child, "exit") : Promise.resolve();
+      upstream.child.kill();
+      await exited;
+    }
     removeTreeSync(userDataDir);
   }
 });

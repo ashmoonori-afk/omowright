@@ -52,11 +52,17 @@ window.addEventListener('mouseup', () => { if (dragging) window.__log.push('drag
 
 async function launch() {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-cua-test-"));
-  const connection = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`, "about:blank"],
-    storageRoot: ud,
-  });
+  let connection;
+  try {
+    connection = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`, "about:blank"],
+      storageRoot: ud,
+    });
+  } catch (error) {
+    removeTreeSync(ud);
+    throw error;
+  }
   return { connection, cleanup: async () => { await connection.close(); removeTreeSync(ud); } };
 }
 
@@ -241,8 +247,10 @@ test("page.waitForTimeout, page.setContent, allTextContents/allInnerTexts and lo
   });
   await new Promise(resolve => site.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${site.address().port}`;
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     const page = (await createAgentTabs(connection).create("about:blank")).page;
 
     await t.test("waitForTimeout waits at least the given time", async () => {
@@ -307,7 +315,7 @@ test("page.waitForTimeout, page.setContent, allTextContents/allInnerTexts and lo
       assert.throws(() => page.locator("li").or({}), /must be a locator/);
     });
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     site.closeAllConnections();
     site.close();
   }
@@ -427,8 +435,10 @@ test("clicking a target=_blank link opens the linked page in a new tab", { skip:
   });
   await new Promise(resolve => site.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${site.address().port}`;
-  const { connection, cleanup } = await launch();
+  let launched;
   try {
+    launched = await launch();
+    const { connection } = launched;
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     await page.goto(`${origin}/`);
     const tabs = createAgentTabs(connection);
@@ -455,7 +465,7 @@ test("clicking a target=_blank link opens the linked page in a new tab", { skip:
     const remaining = await connection.listTargets();
     assert.ok(!remaining.some(target => target.url.startsWith(origin)), "closing owned tabs closes the popups too");
   } finally {
-    await cleanup();
+    await launched?.cleanup();
     site.close();
   }
 });

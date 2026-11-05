@@ -114,12 +114,13 @@ async function serveWaitFixture() {
 async function withPage(url, body) {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-wait-"));
   const fixture = await serveWaitFixture();
-  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  let browser;
   try {
+    browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
     const page = await browser.newTab(`${fixture.base}${url}`);
     await body(page, fixture);
   } finally {
-    await browser.close();
+    await browser?.close();
     await fixture.close();
     removeTreeSync(ud);
   }
