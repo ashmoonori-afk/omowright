@@ -336,6 +336,67 @@ test("goto resolves on a loaded sparse page and on a frameset page", { skip: !SH
   }
 });
 
+// Navigation readiness must include fetch-driven hydration, but a background fetch must
+// not turn the bounded readiness wait into a network-idle wait.
+test("goto snapshots hydrated content and bounds never-ending fetches", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const timers = new Set();
+  const server = createServer((request, response) => {
+    if (request.url === "/pending") return;
+    if (request.url === "/content" || request.url === "/text") {
+      // This is server latency in the application being tested, not a test wait.
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        response.end("<main><h1>Hydrated content</h1><button>Continue</button></main>");
+      }, request.url === "/content" ? 500 : 200);
+      timers.add(timer);
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(`<!doctype html><title>hydration</title>
+<style>@keyframes reveal { from { opacity: 0.99 } to { opacity: 1 } }</style>
+<body><a href="#main">Skip to content</a>
+<script>
+document.addEventListener("DOMContentLoaded", async () => {
+  ${request.url === "/forever" ? 'fetch("/pending");' : `
+  const content = await (await fetch("/content")).text();
+  const link = document.querySelector("a");
+  link.addEventListener("animationend", async () => {
+    document.body.insertAdjacentHTML("beforeend", content);
+    const heading = document.querySelector("h1").firstChild;
+    await fetch("/text");
+    heading.data = "Hydrated and settled";
+    window.lastMutation = performance.now();
+  }, { once: true });
+  // A real rendering event separates the fetch from committing the hydrated UI.
+  link.style.animation = "reveal 200ms";
+  `}
+});
+</script>`);
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-hydration-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab("about:blank");
+    await page.goto(`${origin}/hydrate`);
+    assert.match(compactSnapshot(await page.snapshot()), /heading "Hydrated and settled"/);
+    assert.ok(await page.evaluate(() => performance.now() - window.lastMutation >= 500), "body mutations settled for 500 ms");
+    const started = Date.now();
+    await page.goto(`${origin}/forever`);
+    const elapsed = Date.now() - started;
+    // Navigation/CDP overhead is outside the 1,500 ms request budget.
+    assert.ok(elapsed < 2500, `never-ending fetch took ${elapsed} ms`);
+    assert.match(compactSnapshot(await page.snapshot()), /Skip to content/);
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+    await browser.close();
+    removeTreeSync(ud);
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 // Public locator contract (#129): getByRole, getByText and getByLabel see elements inside open
 // shadow roots, nested ones included, and never inside closed roots. Count and action resolution
 // run separate in-page queries, so both are exercised against a real browser.
