@@ -1,3 +1,5 @@
+import { urlMatches } from "./url-match.js";
+
 const sessions = new WeakMap();
 const streams = new WeakMap();
 const METHODS = [
@@ -216,6 +218,6 @@ export function networkPredicate(match) {
     match.lastIndex = 0;
     return match.test(value.url());
   };
-  if (typeof match === "string") return value => value.url() === match;
+  if (typeof match === "string") return value => urlMatches(value.url(), match);
   throw new TypeError("urlOrPredicate must be a URL string, RegExp or predicate");
 }

@@ -254,6 +254,31 @@ test("dispose rejects pending waiters and removes every subscription", async () 
   snoop.dispose();
 });
 
+for (const method of ["waitForRequest", "waitForResponse"]) {
+  for (const [name, match, rejected, accepted] of [
+    ["exact", "https://x.test/api/items", "https://x.test/api/items/extra", "https://x.test/api/items"],
+    ["single star", "https://x.test/api/*", "https://x.test/api/nested/items", "https://x.test/api/items"],
+    ["double star", "**/api/**", "https://x.test/other/items", "https://x.test/api/nested/items"],
+    ["query string", "**/api/items?kind=*", "https://x.test/api/itemsXkind=one", "https://x.test/api/items?kind=one"],
+    ["query alternatives", "**/api/{items,users}?page=2", "https://x.test/api/items?page=1", "https://x.test/api/users?page=2"],
+  ]) {
+    test(`${method} uses Playwright URL globs: ${name}`, async () => {
+      const cdp = new FakeCdp();
+      const page = new OmOPage(cdp, {
+        mainFrameId: "f1", getFrame: () => null, frames: new Map(),
+      }, "t1", "s1", { resolvePageSession: async () => "s1" });
+      try {
+        const pending = page[method](match, { timeout: 1000 });
+        await roundTrip(cdp, "rejected", { url: rejected });
+        await roundTrip(cdp, "accepted", { url: accepted });
+        assert.equal((await pending).url(), accepted);
+      } finally {
+        await page.dispose();
+      }
+    });
+  }
+}
+
 test("page network objects reject refused bodies and unsubscribe on disposal", async () => {
   const cdp = new FakeCdp();
   const page = new OmOPage(cdp, {
