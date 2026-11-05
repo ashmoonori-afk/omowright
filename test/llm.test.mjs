@@ -29,6 +29,22 @@ test("compactSnapshot rejects malformed input", () => {
   assert.throws(() => compactSnapshot(42), TypeError);
 });
 
+test("compactSnapshot renders delta entries and frame-local removed ranges", () => {
+  const snapshot = { full: false, diff: {
+    added: [{ ref: "e8", tree: 'textbox "Extra" [ref=e8]' }],
+    changed: [{ ref: "e1", tree: 'textbox "Name" [ref=e1]: "Ada"' }],
+    removed: ["e2", "e3", "e4", "e7", "f1e2", "f1e3", "f2e1"],
+    focused: "e1",
+  } };
+  assert.equal(compactSnapshot(snapshot), [
+    '+ textbox "Extra" [ref=e8]',
+    '~ textbox "Name" [ref=e1]: "Ada"',
+    '- e2-e4, e7, f1e2-f1e3, f2e1',
+    '@focused e1',
+  ].join("\n"));
+  assert.equal(compactSnapshot(JSON.stringify(snapshot)), compactSnapshot(snapshot));
+});
+
 test("snapshotTokens reports bytes and token estimate", () => {
   const { bytes, estTokens } = snapshotTokens(GITHUB_LIKE);
   assert.equal(bytes, Buffer.byteLength(GITHUB_LIKE, "utf8"));
