@@ -31,10 +31,14 @@ const LIVE = { skip: !SHELL && "no chromium binary found", timeout: 60000 };
 
 // Contract (#191): deadlines are gone when their wait settles, including
 // rejection and browser teardown; successful return values alone miss leaks.
-test("settled waits and connection teardown leave no timers", LIVE, async () => {
-  await promisify(execFile)(process.execPath, [
-    fileURLToPath(new URL("./fixtures/wait-timer-teardown.mjs", import.meta.url)),
-  ], { env: { ...process.env, SHELL_BIN: SHELL }, timeout: 30000 });
+const timerRepetitions = process.platform === "win32" ? 30 : 1;
+test("settled waits and connection teardown leave no timers", { ...LIVE, timeout: LIVE.timeout * timerRepetitions }, async () => {
+  for (let i = 1; i <= timerRepetitions; i++) {
+    await promisify(execFile)(process.execPath, [
+      fileURLToPath(new URL("./fixtures/wait-timer-teardown.mjs", import.meta.url)),
+    ], { env: { ...process.env, SHELL_BIN: SHELL }, timeout: 30000 });
+    console.log(`TIMER_REPETITION_PASS ${process.versions.bun ? "bun" : "node"} ${i}/${timerRepetitions}`);
+  }
 });
 
 const TEXT = "<p>A local page for the waitForFunction test, with enough text for the content readiness probe.</p>";
