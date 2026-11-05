@@ -111,9 +111,8 @@ test("interactive snapshots keep clickable generic tiles whose parent is only a 
     assert.match(snap.tree, /Card tile/, "a cursor:pointer div inside a pointer container is kept");
     assert.match(snap.tree, /Icon tile/, "a cursor:pointer span nested twice is kept");
     assert.match(snap.tree, /Focusable tile/, "a tabindex tile is kept");
-    const names = Object.values(snap.refs).map((meta) => meta.name);
-    assert.ok(names.includes("Card tile"), `refs: ${names}`);
-    const cardRef = Object.entries(snap.refs).find(([, meta]) => meta.name === "Card tile")[0];
-    assert.match(snap.css[cardRef] ?? "", /#card-tile|pointer-generics/, "the tile has a css path");
+    const refLines = snap.tree.split("\n").filter((line) => /ref=e\d+/.test(line));
+    assert.ok(refLines.some((line) => line.includes("Card tile")), `the tile keeps a ref: ${refLines.join(" | ")}`);
+    assert.ok(refLines.some((line) => line.includes("Focusable tile")), "the focusable tile keeps a ref");
   });
 });

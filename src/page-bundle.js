@@ -821,6 +821,7 @@
 		if (role === "generic" && !nodeRefId && !hidden) return null;
 		const hints = [];
 		if (interactivity.interactive && !interactivity.isInteractiveTag && interactivity.hints.length > 0) hints.push(...interactivity.hints);
+		const interactiveLeafControl = interactivity.interactive && element.childElementCount === 0;
 		const href = element.getAttribute("href");
 		const type = element.getAttribute("type");
 		const placeholder = element.getAttribute("placeholder");
@@ -841,6 +842,7 @@
 			selected: selected || void 0,
 			focused: focused || void 0,
 			disabled: disabled || void 0,
+			interactiveLeafControl: interactiveLeafControl || void 0,
 			refId: nodeRefId,
 			hints,
 			href: href ?? void 0,
@@ -1078,7 +1080,7 @@
 							if (!child.nodeValue || targetNode.role === "textbox") continue;
 							// Interactive reads keep a control's own visible label and heading text,
 							// but drop free-standing body prose under landmarks and generics.
-							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role)) continue;
+							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role) && !targetNode.interactiveLeafControl) continue;
 							targetNode.children.push(child.nodeValue);
 							continue;
 						}
