@@ -54,6 +54,7 @@ export {
   SessionManager,
   UnsupportedOperationError,
   VideoRecordingError,
+  WaitForFunctionTimeoutError,
   takeSnapshot,
   selectors,
 } from "./core.js";
