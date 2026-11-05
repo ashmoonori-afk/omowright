@@ -327,6 +327,57 @@ test("named cloak launch detects an unregistered holder on the legacy port", asy
   }
 });
 
+// Security contract (#80): a named cloak launch dials 127.0.0.1:9242, where an
+// unregistered CloakBrowser listens, only when its caller names that endpoint.
+// The test binds the port and counts accepts, so any transport that reaches it
+// is seen. Both launches fail on the instance name, which connectNamed checks
+// after the launch guard has run and before it spawns anything; the second one
+// names the port and must reach it, so the first one's zero cannot come from a
+// guard that never ran. Skipped only when another process holds 9242.
+const DEFAULT_CLOAK_PORT = 9242;
+// 404 lets a probe pass through to the launch, so a regression fails on the
+// accept count rather than on the probe's own error.
+const defaultPortListener = createServer((_req, res) => res.writeHead(404).end());
+const defaultPortBound = await new Promise((resolve) => {
+  defaultPortListener.once("error", () => resolve(false));
+  defaultPortListener.listen(DEFAULT_CLOAK_PORT, "127.0.0.1", () => resolve(true));
+});
+defaultPortListener.unref();
+
+test("a named cloak launch dials 127.0.0.1:9242 only when legacyProbeUrl names it", {
+  skip: !defaultPortBound && `127.0.0.1:${DEFAULT_CLOAK_PORT} is held by another process`,
+}, async () => {
+  const registryRoot = mkdtempSync(path.join(tmpdir(), "nir-registry-"));
+  const mineDir = mkdtempSync(path.join(tmpdir(), "nir-mine-"));
+  let accepted = 0;
+  defaultPortListener.on("connection", () => {
+    accepted += 1;
+  });
+  const launch = (options) =>
+    assert.rejects(
+      omowright.connectCloakProfile({
+        name: "not a valid name",
+        browserPath: process.execPath,
+        profileDir: mineDir,
+        fingerprintSeed: 12345,
+        registryRoot,
+        ...options,
+      }),
+      (error) => error instanceof TypeError && /instance name/.test(error.message),
+    );
+  try {
+    await launch({});
+    assert.equal(accepted, 0, `connections accepted on 127.0.0.1:${DEFAULT_CLOAK_PORT} without legacyProbeUrl`);
+    await launch({ legacyProbeUrl: `http://127.0.0.1:${DEFAULT_CLOAK_PORT}` });
+    assert.ok(accepted > 0, "a launch whose legacyProbeUrl names the port reaches it");
+  } finally {
+    defaultPortListener.closeAllConnections();
+    await new Promise((resolve) => defaultPortListener.close(resolve));
+    rmSync(registryRoot, { recursive: true, force: true });
+    rmSync(mineDir, { recursive: true, force: true });
+  }
+});
+
 // Contract owner: the Windows owner-only hardening (security contract). The
 // Windows tools run by absolute System32 path, so a cwd another user can write
 // cannot substitute them, and every failure throws, so no caller goes on with
