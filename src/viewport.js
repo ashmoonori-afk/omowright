@@ -6,7 +6,7 @@ function validateViewport(viewport) {
 }
 export async function repinViewport(page, viewport, options = {}) {
   const size = validateViewport(viewport); const sessionId = await page.resolveSessionId();
-  await page.cdp.send("Emulation.setDeviceMetricsOverride", { ...size, deviceScaleFactor: options.deviceScaleFactor ?? 1, mobile: options.mobile ?? false }, sessionId);
+  await page.cdp.send("Emulation.setDeviceMetricsOverride", { ...size, screenWidth: size.width, screenHeight: size.height, deviceScaleFactor: options.deviceScaleFactor ?? 1, mobile: options.mobile ?? false }, sessionId);
   page.setCachedViewportSize(size); return { ...size };
 }
 export { validateViewport };

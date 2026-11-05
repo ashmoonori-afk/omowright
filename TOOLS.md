@@ -71,6 +71,37 @@ running Chromium DevTools endpoint).
   `data-testid` exactly (or by RegExp); `selectors.setTestIdAttribute(name)`
   switches the attribute for locators created afterwards.
 - `page.evaluate(expression)` — run JS in the page.
+- `page.addInitScript(script, arg?)` — register a function (with one serializable
+  argument), a source string, `{ content }`, or `{ path }` (relative to the
+  working directory). It runs in the main world before document scripts on
+  every navigation and child-frame attachment/navigation, including
+  out-of-process frames. It does not run in the current document.
+- `page.exposeFunction(name, callback)` — install an async function on every
+  frame's `window`, including existing frames and future documents. Browser
+  calls forward their arguments to the host callback; its result resolves the
+  browser promise and a thrown error rejects it. Duplicate names reject.
+  Supports JSON-like values, `undefined`, non-finite numbers, `-0` and bigints.
+  This member enables Runtime on demand and keeps it enabled for the binding's
+  lifetime; ordinary page setup does not enable Runtime.
+- `page.exposeBinding(name, callback)` — like `exposeFunction`, but the host
+  callback receives `{ context, page, frame }` before the browser arguments.
+  `context` is the real `page.context()` object and `frame` is the calling
+  frame, including a same-process or out-of-process child. Bindings survive
+  frame and page navigation and are installed in existing frames.
+- `page.setExtraHTTPHeaders(headers)` — replace the page's extra request
+  headers, including frame requests; values must be strings. Pass `{}` to
+  clear them. Network ownership is shared with readiness and request capture,
+  so ending a transient subscription does not remove the headers.
+- `page.setViewportSize({ width, height })` — set positive integer CSS-pixel
+  viewport and screen dimensions. On an agent-owned tab this also updates
+  its navigation pin, using the manager's serialized repin queue.
+- `page.emulateMedia({ media?, colorScheme?, reducedMotion?, forcedColors?, contrast? })`
+  — emulate CSS media and preferences. `media` accepts `"screen"` or `"print"`;
+  `colorScheme` accepts `"light"`, `"dark"` or `"no-preference"`;
+  `reducedMotion` accepts `"reduce"` or `"no-preference"`;
+  `forcedColors` accepts `"active"` or `"none"`; `contrast` accepts `"more"` or
+  `"no-preference"`. Omitted properties retain their overrides; `null` clears
+  that property's override. Applies to current and future frame sessions.
 - `page.context()` — the page's browser context (shared by pages in the same
   context on this connection). Cookie reads, writes and clears are scoped to
   that CDP browser context, including when attached to an incognito tab.
@@ -146,7 +177,7 @@ running Chromium DevTools endpoint).
   `pageerror` receives an `Error` (page `name`, `message` and `stack`) for each
   uncaught exception or unhandled rejection in the page or its frames. The
   Runtime domain it needs is enabled only while a `pageerror` or `console`
-  listener exists (pages can detect it), and exceptions thrown before the
+  listener or an exposed function exists (pages can detect it), and exceptions thrown before the
   subscription are not replayed. `close` fires once the tab is gone, whether
   `page.close()`, `window.close()`, the user or another client closed it; the
   page is disposed with it.
