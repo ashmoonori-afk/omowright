@@ -21,20 +21,34 @@ export class BrowserConnection {
   #pages = new Map();
   #storageRoot;
   #popups = new Map();
-  #popupOff;
+  #popupTargets = new Map();
+  #attachingPopups = new Map();
+  #ownedPopups = new Set();
+  #popupOff = [];
 
   constructor(client, options = {}) {
     this.#client = client;
     this.#sessions = new SessionManager(client);
     this.tabs = new TabRepository(client);
     this.#storageRoot = path.resolve(options.storageRoot ?? process.cwd());
-    this.#popupOff = client.on("Target.targetCreated", ({ targetInfo }) => {
-      if (targetInfo?.type !== "page") return;
-      const queue = this.#popups.get(targetInfo.openerId);
-      const pending = queue?.shift();
-      if (!queue?.length) this.#popups.delete(targetInfo.openerId);
-      if (pending) this.#attachPopup(targetInfo.targetId, pending).catch(pending.reject);
-    });
+    this.#popupOff.push(client.on("Target.targetCreated", ({ targetInfo }) => {
+      if (targetInfo?.type !== "page" || !this.#acceptsPopup(targetInfo.openerId)) return;
+      // Target discovery and Page.windowOpen are independently dispatched. Keep
+      // the target's opener identity even when discovery wins that race.
+      const targets = this.#popupTargets.get(targetInfo.openerId) ?? [];
+      targets.push({ targetId: targetInfo.targetId });
+      this.#popupTargets.set(targetInfo.openerId, targets);
+      this.#matchPopups(targetInfo.openerId);
+    }));
+    this.#popupOff.push(client.on("Target.targetDestroyed", ({ targetId }) => {
+      this.#ownedPopups.delete(targetId);
+      const error = Error("Popup closed before attachment completed");
+      this.#attachingPopups.get(targetId)?.reject(error);
+      for (const targets of this.#popupTargets.values()) {
+        const target = targets.find(target => target.targetId === targetId);
+        if (target) target.error = error;
+      }
+    }));
   }
 
   async initialize() {
@@ -55,6 +69,30 @@ export class BrowserConnection {
 
   async newTab(url = "about:blank") {
     return (await (getAgentTabs(this) ?? createAgentTabs(this)).create(url)).page;
+  }
+
+  #acceptsPopup(openerId) {
+    return !!getAgentTabs(this)?.get(openerId) &&
+      this.#pages.get(openerId)?.page.events.listenerCount("popup") > 0;
+  }
+
+  #matchPopups(openerId) {
+    const targets = this.#popupTargets.get(openerId);
+    const queue = this.#popups.get(openerId);
+    while (targets?.length && queue?.length) {
+      const target = targets.shift();
+      const pending = queue.shift();
+      if (target.error) pending.reject(target.error);
+      else {
+        this.#attachingPopups.set(target.targetId, pending);
+        this.#ownedPopups.add(target.targetId);
+        pending.operation = this.#attachPopup(target.targetId, pending).catch(pending.reject).finally(() => {
+          this.#attachingPopups.delete(target.targetId);
+        });
+      }
+    }
+    if (!targets?.length) this.#popupTargets.delete(openerId);
+    if (!queue?.length) this.#popups.delete(openerId);
   }
 
   async #attachPopup(targetId, pending) {
@@ -93,12 +131,14 @@ export class BrowserConnection {
       },
       registerReadableDownload: value => value,
       isReadableDownload: () => false,
-      resolvePopup: metadata => {
+      resolvePopup: async metadata => {
+        if (!this.#acceptsPopup(targetId)) return;
         const queue = this.#popups.get(targetId) ?? [];
         const promise = new Promise((resolve, reject) => queue.push({
           resolve, reject, metadata: { url: metadata.url, windowName: metadata.windowName },
         }));
         this.#popups.set(targetId, queue);
+        this.#matchPopups(targetId);
         return promise;
       },
       openPopupTab: async () => { throw Error("Popup tab control requires the extension bridge"); },
@@ -116,12 +156,19 @@ export class BrowserConnection {
   }
 
   async close() {
-    this.#popupOff();
+    for (const off of this.#popupOff) off();
     for (const queue of this.#popups.values()) {
       for (const pending of queue) pending.reject(Error("Browser connection closed"));
     }
     this.#popups.clear();
-    await getAgentTabs(this)?.dispose();
+    this.#popupTargets.clear();
+    for (const pending of this.#attachingPopups.values()) pending.reject(Error("Browser connection closed"));
+    await Promise.all([...this.#attachingPopups.values()].map(pending => pending.operation));
+    const tabs = getAgentTabs(this);
+    if (tabs) {
+      await Promise.all([...this.#ownedPopups].filter(id => tabs.get(id)).map(id => tabs.close(id)));
+      await tabs.dispose({ closeOwned: false });
+    }
     for (const [targetId, entry] of [...this.#pages]) {
       await entry.page.dispose().catch(() => {});
       await entry.frames.dispose().catch(() => {});
