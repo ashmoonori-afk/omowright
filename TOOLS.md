@@ -25,6 +25,18 @@ running Chromium DevTools endpoint).
 - `page.locator(refOrCss)` — `click`, `fill`, `press`, `pressSequentially`,
   `hover`, `check`, `selectOption`, `dragTo`, `setInputFiles`, `textContent`,
   `innerText`, `isVisible`, `waitFor`, `first/nth/last`, `filter`.
+- `page.getByRole(role, options?)`, `getByText(text, { exact })`,
+  `getByLabel(text, { exact })`, `getByPlaceholder(text, { exact })`,
+  `getByAltText(text, { exact })`, `getByTitle(text, { exact })`,
+  `getByTestId(testId)` — Playwright locators. Frames (`page.frames()`,
+  `page.mainFrame()`), frame locators (`page.frameLocator(css)`) and locators
+  (`page.locator(css).getByTestId(id)`, scoped to that locator) have the same
+  getters. They match inside open shadow roots, never inside closed ones.
+  For placeholder, alt text and title, a string matches a
+  case-insensitive substring of the attribute, `exact: true` the whole
+  case-sensitive value, and a RegExp the raw value. `getByTestId` matches
+  `data-testid` exactly (or by RegExp); `selectors.setTestIdAttribute(name)`
+  switches the attribute for locators created afterwards.
 - `page.evaluate(expression)` — run JS in the page.
 - `page.screenshot(options?)` — image bytes (path, fullPage, clip, type, quality).
 - `page.pdf(options?)` — PDF bytes (path, format, margin, printBackground).

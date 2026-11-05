@@ -54,6 +54,7 @@ export {
   SessionManager,
   UnsupportedOperationError,
   takeSnapshot,
+  selectors,
 } from "./core.js";
 export { normalizeDialogPolicy, resolveDialogAction } from "./dialog-policy.js";
 export { DEVICE_PRESETS, emulate } from "./emulate.js";
