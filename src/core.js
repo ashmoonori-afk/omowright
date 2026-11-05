@@ -1080,6 +1080,12 @@ async #collect(scope){
     }
     return filtered;
   }
+  if(scope!==undefined&&!isRef(this.#t)&&!parseBackendNodeSelector(this.#t)&&!isRoleSelector(this.#t)){
+    // CSS, text and label steps start at the scope roots, so a chained selector resolves inside each root and never above it.
+    const count=await this.#c(this.#t,scope,!0);nodes=[];
+    for(let index=0;index<count;index++)nodes.push(await this.#c(`${this.#t}:nth(${index})`,scope));
+    return nodes;
+  }
   if(isRef(this.#t)||parseBackendNodeSelector(this.#t)){
     try{nodes=[await this.#r()]}catch(error){if(!isLocatorResolutionMiss(error))throw error;nodes=[]}
   }else{
@@ -1285,7 +1291,7 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
           return roots;
         };
         return queryAll(selector).length;
-      }`,this.#t);return Array.from({length:jn},(xn,jn)=>this.nth(jn))}toString(){return`Locator@${this.#t}`}async#a(xn){if(this.#n)throw Error(`Snapshot refs already include frame identity; use page.locator(ref) instead of frame.locator(ref).`);let jn=xn.match(REF_PATTERN);if(!jn)throw Error(`Invalid ref format: ${xn}`);let Vn=jn[1]??``,qn=this.#e.frameManager.resolveFrameIdForSnapshotPrefix(Vn);if(!qn)throw new RefStaleError(xn);let Jn=Vn?3:1;for(let jn=0;jn<Jn;jn++){jn>0&&await new Promise(xn=>setTimeout(xn,50*jn));let Vn=this.#e.frameManager.getFrame(qn);if(!Vn||!Vn.isolatedContextId&&(await this.#e.frameManager.ensureInjected(qn),!Vn.isolatedContextId))throw new RefStaleError(xn);try{let{result:jn}=await this.#e.cdp.send(`Runtime.callFunctionOn`,{functionDeclaration:`function(refId) { return globalThis.__omowright?.deref(refId) ?? null; }`,arguments:[{value:xn}],executionContextId:Vn.isolatedContextId,returnByValue:!1,awaitPromise:!1,userGesture:!1},await this.#e.resolveSessionId(Vn.sessionId));if(jn.objectId)return{objectId:jn.objectId,frameId:qn,frameSessionId:Vn.sessionId,contextId:Vn.isolatedContextId}}catch{this.#e.frameManager.invalidateContext(qn)}}throw new RefStaleError(xn)}async#o(xn){let jn=this.#e.frameManager.getFrame(xn.frameId),Vn=await this.#e.frameManager.ensureInjected(xn.frameId);if(!jn||!Vn)throw Error(`File chooser element is no longer available`);let qn=await this.#e.resolveSessionId(jn.sessionId),{object:Jn}=await this.#e.cdp.send(`DOM.resolveNode`,{backendNodeId:xn.backendNodeId,executionContextId:Vn},qn);if(!Jn.objectId)throw Error(`File chooser element is no longer available`);return{objectId:Jn.objectId,frameId:xn.frameId,frameSessionId:jn.sessionId,contextId:Vn}}async#s(){let xn=await this.#u(),jn=this.#e.frameManager.getFrame(xn),Vn=await this.#e.frameManager.ensureInjected(xn);if(!jn||!Vn)throw Error(`${this.#n?.label()??`Main frame`} isolated world is not ready`);return{contextId:Vn,frameSessionId:jn.sessionId}}async#c(xn){let jn=await this.#u(),Vn=this.#e.frameManager.getFrame(jn),qn=await this.#e.frameManager.ensureInjected(jn);if(!Vn||!qn)throw Error(`${this.#n?.label()??`Main frame`} isolated world is not ready`);let Jn=this.#f(xn),{result:Yn}=await this.#e.cdp.send(`Runtime.callFunctionOn`,{functionDeclaration:`function(query) {
+      }`,this.#t);return Array.from({length:jn},(xn,jn)=>this.nth(jn))}toString(){return`Locator@${this.#t}`}async#a(xn){if(this.#n)throw Error(`Snapshot refs already include frame identity; use page.locator(ref) instead of frame.locator(ref).`);let jn=xn.match(REF_PATTERN);if(!jn)throw Error(`Invalid ref format: ${xn}`);let Vn=jn[1]??``,qn=this.#e.frameManager.resolveFrameIdForSnapshotPrefix(Vn);if(!qn)throw new RefStaleError(xn);let Jn=Vn?3:1;for(let jn=0;jn<Jn;jn++){jn>0&&await new Promise(xn=>setTimeout(xn,50*jn));let Vn=this.#e.frameManager.getFrame(qn);if(!Vn||!Vn.isolatedContextId&&(await this.#e.frameManager.ensureInjected(qn),!Vn.isolatedContextId))throw new RefStaleError(xn);try{let{result:jn}=await this.#e.cdp.send(`Runtime.callFunctionOn`,{functionDeclaration:`function(refId) { return globalThis.__omowright?.deref(refId) ?? null; }`,arguments:[{value:xn}],executionContextId:Vn.isolatedContextId,returnByValue:!1,awaitPromise:!1,userGesture:!1},await this.#e.resolveSessionId(Vn.sessionId));if(jn.objectId)return{objectId:jn.objectId,frameId:qn,frameSessionId:Vn.sessionId,contextId:Vn.isolatedContextId}}catch{this.#e.frameManager.invalidateContext(qn)}}throw new RefStaleError(xn)}async#o(xn){let jn=this.#e.frameManager.getFrame(xn.frameId),Vn=await this.#e.frameManager.ensureInjected(xn.frameId);if(!jn||!Vn)throw Error(`File chooser element is no longer available`);let qn=await this.#e.resolveSessionId(jn.sessionId),{object:Jn}=await this.#e.cdp.send(`DOM.resolveNode`,{backendNodeId:xn.backendNodeId,executionContextId:Vn},qn);if(!Jn.objectId)throw Error(`File chooser element is no longer available`);return{objectId:Jn.objectId,frameId:xn.frameId,frameSessionId:jn.sessionId,contextId:Vn}}async#s(){let xn=await this.#u(),jn=this.#e.frameManager.getFrame(xn),Vn=await this.#e.frameManager.ensureInjected(xn);if(!jn||!Vn)throw Error(`${this.#n?.label()??`Main frame`} isolated world is not ready`);return{contextId:Vn,frameSessionId:jn.sessionId}}async#c(xn,scope,countOnly=!1){let jn=await this.#u(),Vn=this.#e.frameManager.getFrame(jn),qn=await this.#e.frameManager.ensureInjected(jn);if(!Vn||!qn)throw Error(`${this.#n?.label()??`Main frame`} isolated world is not ready`);const scopeRoots=scope?.filter(root=>root.contextId===qn&&root.frameSessionId===Vn.sessionId)??[];if(scope&&scopeRoots.length===0){if(countOnly)return 0;throw Error(`Selector "${xn}" not found`)}let Jn={...this.#f(xn),scoped:scope!==void 0,countOnly},{result:Yn}=await this.#e.cdp.send(`Runtime.callFunctionOn`,{functionDeclaration:`function(query, ...scopeRoots) {
         const normalizeText = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
         const parseTextMatcher = (raw) => {
           if (!raw) return null;
@@ -1415,9 +1421,9 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
           });
           return controls;
         };
-        const queryAll = (selector) => {
+        const queryAll = (selector, start) => {
           const steps = splitSteps(selector);
-          let roots = [document];
+          let roots = start;
           for (const rawStep of steps) {
             const step = parseStep(rawStep);
             const next = [];
@@ -1447,10 +1453,11 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
           }
           return roots;
         };
-        const nodes = queryAll(query.selector);
+        const nodes = queryAll(query.selector, query.scoped ? scopeRoots : [document]);
+        if (query.countOnly) return nodes.length;
         const index = query.nth === 'last' ? nodes.length - 1 : query.nth;
         return nodes[index] ?? null;
-      }`,arguments:[{value:Jn}],executionContextId:qn,returnByValue:!1,awaitPromise:!1,userGesture:!1},await this.#e.resolveSessionId(Vn.sessionId));if(!Yn.objectId)throw Error(`Selector "${xn}" not found`);return{objectId:Yn.objectId,frameId:jn,frameSessionId:Vn.sessionId,contextId:qn}}async#l(xn){let jn=this.#p(xn),Vn=await this.#d(),{nth:qn,...Jn}=jn,Yn;if(qn===`last`){Yn=0;for(let{frameId:xn}of Vn){let jn=this.#e.frameManager.getFrame(xn);jn?.isolatedContextId&&(Yn+=await this.#m(await this.#e.resolveSessionId(jn.sessionId),jn.isolatedContextId,Jn))}--Yn}else Yn=qn;if(Yn<0)throw Error(`Role selector not found: ${xn}`);for(let{frameId:xn}of Vn){let Vn=this.#e.frameManager.getFrame(xn);if(!Vn?.isolatedContextId)continue;let qn=await this.#e.resolveSessionId(Vn.sessionId),Zn=await this.#m(qn,Vn.isolatedContextId,Jn);if(Zn<=0)continue;if(Yn>=Zn){Yn-=Zn;continue}let{result:Qn}=await this.#e.cdp.send(`Runtime.callFunctionOn`,{functionDeclaration:`function(query) {
+      }`,arguments:[{value:Jn},...scopeRoots.map(root=>({objectId:root.objectId}))],executionContextId:qn,returnByValue:!1,awaitPromise:!1,userGesture:!1},await this.#e.resolveSessionId(Vn.sessionId));if(countOnly)return Yn.value;if(!Yn.objectId)throw Error(`Selector "${xn}" not found`);return{objectId:Yn.objectId,frameId:jn,frameSessionId:Vn.sessionId,contextId:qn}}async#l(xn){let jn=this.#p(xn),Vn=await this.#d(),{nth:qn,...Jn}=jn,Yn;if(qn===`last`){Yn=0;for(let{frameId:xn}of Vn){let jn=this.#e.frameManager.getFrame(xn);jn?.isolatedContextId&&(Yn+=await this.#m(await this.#e.resolveSessionId(jn.sessionId),jn.isolatedContextId,Jn))}--Yn}else Yn=qn;if(Yn<0)throw Error(`Role selector not found: ${xn}`);for(let{frameId:xn}of Vn){let Vn=this.#e.frameManager.getFrame(xn);if(!Vn?.isolatedContextId)continue;let qn=await this.#e.resolveSessionId(Vn.sessionId),Zn=await this.#m(qn,Vn.isolatedContextId,Jn);if(Zn<=0)continue;if(Yn>=Zn){Yn-=Zn;continue}let{result:Qn}=await this.#e.cdp.send(`Runtime.callFunctionOn`,{functionDeclaration:`function(query) {
               const normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
               const getRole = (node) => {
                 const explicit = node.getAttribute?.('role');
