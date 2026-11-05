@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, existsSync, globSync, readdirSync, readlinkSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { connectPipe, compactSnapshot, createAgentTabs } from "../src/index.js";
@@ -45,6 +46,22 @@ function findFfmpeg() {
 }
 
 const FFMPEG = findFfmpeg();
+
+for (const mode of ["missing", "early-exit"]) {
+  test(`page video ${mode} encoder rejects without crashing its host`, {
+    skip: !SHELL && "no chromium binary found",
+    timeout: 60000,
+  }, () => {
+    // The reported crash is in a Node host. Isolate it so an uncaught rejection
+    // fails this assertion under either test runner instead of killing the suite.
+    const result = spawnSync("node", [
+      fileURLToPath(new URL("./fixtures/video-failure-host.mjs", import.meta.url)), mode, SHELL,
+    ], { encoding: "utf8", timeout: 45000 });
+    assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
+    const receipt = JSON.parse(result.stdout.trim().split("\n").at(-1));
+    assert.deepEqual(receipt, { mode, error: "VideoRecordingError", closed: true });
+  });
+}
 
 // The package entry must finalize real screencast frames into a decodable clip.
 // Dangling bundled imports or missing encoder process helpers break this boundary.

@@ -53,6 +53,7 @@ export {
   OmOPage,
   SessionManager,
   UnsupportedOperationError,
+  VideoRecordingError,
   takeSnapshot,
   selectors,
 } from "./core.js";
