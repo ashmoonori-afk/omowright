@@ -117,11 +117,13 @@ for (const event of ["end", "close"]) {
 // after close(); its EOF must not fail the commands of the launch that replaced it.
 test("a previous launch's pipe EOF leaves the relaunched browser's pending commands alone", { timeout: 15_000 }, async t => {
   const client = await failureClient(t);
-  const { pid: holderPid } = await client.send("Fixture.shareOutput");
+  const { pid: holderPid, probe } = await client.send("Fixture.shareOutput");
+  console.log("PIPE_INHERITANCE_PROBE", process.platform, process.version, probe);
   t.after(() => { try { process.kill(holderPid, "SIGKILL"); } catch {} });
   const oldPipe = client.childProcess.stdio[4];
   const oldPipeClosed = once(oldPipe, "close");
   await client.close();
+  console.log("PIPE_AFTER_CLOSE", { readableEnded: oldPipe.readableEnded, destroyed: oldPipe.destroyed });
   assert.equal(oldPipe.readableEnded, false, "the helper should still hold the old pipe open");
   await client.ensureConnected();
   const { outcome } = await holdCommand(client, "session-a", {});

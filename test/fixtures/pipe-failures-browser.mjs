@@ -49,10 +49,20 @@ input.on("data", chunk => {
       case "Fixture.shareOutput": {
         // A process that outlives this one and keeps the parent's read pipe open,
         // like a browser helper that inherited the CDP fd.
-        const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], {
-          stdio: ["ignore", "ignore", "ignore", "ignore", 4],
+        const holder = spawn(process.execPath, ["-e", `
+          const fs = require("node:fs");
+          let probe;
+          try {
+            fs.writeSync(4, JSON.stringify({method:"Fixture.holderReady",params:{}}) + "\\0");
+            probe = { writable: true };
+          } catch (error) { probe = { writable: false, code: error.code }; }
+          process.send(probe);
+          process.disconnect();
+          setInterval(() => {}, 1 << 30);
+        `], {
+          stdio: ["ignore", "ignore", "ignore", "ignore", 4, "ipc"],
         });
-        write({ id, result: { pid: holder.pid } });
+        holder.once("message", probe => write({ id, result: { pid: holder.pid, probe } }));
         break;
       }
       case "Fixture.detach":
