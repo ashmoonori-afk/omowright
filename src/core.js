@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { pageBundle } from "./injected.js";
 import { queryOpenShadowAll } from "./open-shadow-query.js";
+import { isElementHiddenForAria } from "./aria-hidden.js";
 import { snapshotResult } from "./snapshot-diff.js";
 import { subscribeConsoleEvents } from "./console-events.js";
 import { targetCreationCapability } from "./internal-capability.js";
@@ -1556,14 +1557,9 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
                 return normalizeText(node.textContent).slice(0, 100);
               };
 
-              const isHidden = (node) => {
-                if (!node.isConnected) return true;
-                if (node.getAttribute?.('hidden') !== null) return true;
-                if (node.getAttribute?.('aria-hidden') === 'true') return true;
-                const style = node.ownerDocument?.defaultView?.getComputedStyle?.(node);
-                if (!style) return false;
-                return style.display === 'none' || style.visibility === 'hidden';
-              };
+              const isElementHiddenForAria = (${isElementHiddenForAria.toString()});
+              const ariaHiddenCache = new Map();
+              const isHidden = (node) => isElementHiddenForAria(node, ariaHiddenCache);
 
               const getAriaBoolean = (value) => {
                 if (value === 'true') return true;
@@ -1727,14 +1723,9 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
             return normalizeText(node.textContent).slice(0, 100);
           };
 
-          const isHidden = (node) => {
-            if (!node.isConnected) return true;
-            if (node.getAttribute?.('hidden') !== null) return true;
-            if (node.getAttribute?.('aria-hidden') === 'true') return true;
-            const style = node.ownerDocument?.defaultView?.getComputedStyle?.(node);
-            if (!style) return false;
-            return style.display === 'none' || style.visibility === 'hidden';
-          };
+          const isElementHiddenForAria = (${isElementHiddenForAria.toString()});
+          const ariaHiddenCache = new Map();
+          const isHidden = (node) => isElementHiddenForAria(node, ariaHiddenCache);
 
           const getAriaBoolean = (value) => {
             if (value === 'true') return true;
