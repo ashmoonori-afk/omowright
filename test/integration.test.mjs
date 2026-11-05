@@ -97,6 +97,134 @@ test("page video start and stop write a playable clip through the package entry"
   }
 });
 
+// Public event contract: subscription must deliver browser console calls, not merely accept the event name.
+// This fails if Runtime capture or page event forwarding is removed; console.logs() cannot prove delivery.
+test("console events stream with type and text and respect page scope and off", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-console-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab("about:blank");
+    const other = await browser.newTab("about:blank");
+    const messages = [];
+    const listener = message => messages.push([message.type(), message.text()]);
+    page.on("console", listener);
+    const first = page.waitForEvent("console", { timeout: 2000 });
+    await other.evaluate("console.log('other-page')");
+    await page.evaluate("console.warn('first', 42)");
+    const message = await first;
+    assert.equal(message.type(), "warning");
+    assert.equal(message.text(), "first 42");
+    assert.deepEqual(messages, [["warning", "first 42"]]);
+    page.off("console", listener);
+    const second = page.waitForEvent("console", { timeout: 2000 });
+    await page.evaluate("console.error('second')");
+    assert.equal((await second).text(), "second");
+    assert.deepEqual(messages, [["warning", "first 42"]]);
+    const onLoad = page.waitForEvent("console", { timeout: 5000 });
+    await page.goto("data:text/html,<script>console.log('navigated')</script><p>ok</p>", { waitUntil: "load" });
+    assert.equal((await onLoad).text(), "navigated");
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+  }
+});
+
+// Public CSS contract across the actual browser boundary. The three query paths (count/all/actions)
+// must agree; a DOM-only mock would hide the failure. No test-only production hook is needed.
+test("CSS locators pierce nested open shadows for collections and actions", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-shadow-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab("about:blank");
+    await page.evaluate(() => {
+      document.body.innerHTML = '<div id="host"></div><button class="item">Light</button><div id="closed"></div>';
+      const shadow = document.querySelector("#host").attachShadow({ mode: "open" });
+      shadow.innerHTML = '<button id="inside-shadow" class="item">Shadow</button><div id="nested"></div>';
+      shadow.querySelector("#nested").attachShadow({ mode: "open" }).innerHTML = '<button class="item" data-note="a > b">Nested</button>';
+      document.querySelector("#closed").attachShadow({ mode: "closed" }).innerHTML = '<button class="item">Closed</button>';
+      shadow.querySelector("button").onclick = () => { document.body.dataset.clicked = "shadow"; };
+    });
+    assert.equal(await page.locator("#inside-shadow").count(), 1);
+    assert.equal(await page.locator(".item").count(), 3);
+    assert.deepEqual(await page.locator(".item").evaluateAll(nodes => nodes.map(node => node.textContent)), ["Light", "Shadow", "Nested"]);
+    assert.equal(await page.locator("#host").locator("#nested").locator(".item").textContent(), "Nested");
+    assert.equal(await page.locator('#host #nested > [data-note="a > b"]').textContent(), "Nested");
+    assert.equal(await page.locator("#host").locator(":scope > button").textContent(), "Shadow");
+    assert.equal(await page.locator("#closed .item").count(), 0);
+    await page.locator("#inside-shadow").click();
+    assert.equal(await page.evaluate("document.body.dataset.clicked"), "shadow");
+    await page.evaluate(() => {
+      document.body.innerHTML = '<div id="a"><span>Scoped</span><section></section></div>';
+    });
+    for (const shadow of [false, true]) {
+      if (shadow) await page.evaluate(() => document.querySelector("#a section").attachShadow({ mode: "open" }));
+      assert.equal(await page.locator("#a").locator("body > #a > span").count(), 0);
+      assert.equal(await page.locator("#a").locator("body span").count(), 0);
+      assert.equal(await page.locator("#a").locator(":scope > span").textContent(), "Scoped");
+    }
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+  }
+});
+
+// Locator queries must work beyond the engine's call-argument limit, both without shadows
+// and when a large open root is present. Small DOM fixtures cannot catch argument spreading.
+test("CSS locators query large light and shadow DOMs without argument overflow", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-large-dom-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab("about:blank");
+    await page.evaluate(() => {
+      document.body.innerHTML = "<i></i>".repeat(150000) + '<button class="large-target">Light</button>';
+    });
+    assert.equal(await page.locator(".large-target").count(), 1);
+    assert.equal(await page.locator(".large-target").textContent(), "Light");
+    await page.evaluate(() => {
+      const host = document.body.appendChild(document.createElement("section"));
+      host.attachShadow({ mode: "open" }).innerHTML = "<i></i>".repeat(150000) + '<button class="large-target">Shadow</button>';
+    });
+    assert.equal(await page.locator(".large-target").count(), 2);
+    assert.deepEqual(await page.locator(".large-target").evaluateAll(nodes => nodes.map(node => node.textContent)), ["Light", "Shadow"]);
+    assert.equal(await page.locator(".large-target").last().textContent(), "Shadow");
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+  }
+});
+
+// The shadow-free hot path must use native matching, not call matches() on each DOM element.
+// Count calls instead of measuring elapsed time, so host load cannot make the regression pass.
+test("shadow-free CSS queries keep selector matching native", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-native-query-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab("about:blank");
+    await page.evaluate(() => { document.body.innerHTML = '<section id="scope">' + '<i class="item"></i>'.repeat(1000) + '<span id="target">Native</span></section>'; });
+    const frameId = page.mainFrame().frameId;
+    await page.evaluateInFrame(frameId, () => {
+      window.queryAudit = { calls: 0, original: Element.prototype.matches };
+      Element.prototype.matches = function(selector) {
+        window.queryAudit.calls++;
+        return window.queryAudit.original.call(this, selector);
+      };
+    });
+    try {
+      assert.equal(await page.locator("#target").count(), 1);
+      assert.equal(await page.locator("#scope").locator(".item").count(), 1000);
+      assert.equal(await page.evaluateInFrame(frameId, () => window.queryAudit.calls), 0);
+    } finally {
+      await page.evaluateInFrame(frameId, () => {
+        Element.prototype.matches = window.queryAudit.original;
+        delete window.queryAudit;
+      });
+    }
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+  }
+});
+
 const FIXTURE_PAGE = "<!doctype html><title>Example Domain</title><main><h1>Example Domain</h1>"
   + "<p>A local page for the pipe transport test, with enough text for the content readiness probe.</p>"
   + "<a href=\"#more\">More information</a></main>";
