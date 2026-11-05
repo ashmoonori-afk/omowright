@@ -34,15 +34,20 @@ input.on("data", chunk => {
       case "Fixture.malformed":
         output.write("{not-json}\0");
         break;
+      // Page.reload is held like Fixture.hold: Chromium answers a reload sent to a
+      // crashed session once the target is back.
       case "Fixture.hold":
-        held.set(sessionId, id);
-        write({ method: "Fixture.held", params: { sessionId } });
+      case "Page.reload":
+        held.set(`${sessionId}:${method}`, id);
+        write({ method: "Fixture.held", params: { sessionId, method } });
         break;
-      case "Fixture.release":
-        write({ id: held.get(params.sessionId), result: { released: true } });
-        held.delete(params.sessionId);
+      case "Fixture.release": {
+        const key = `${params.sessionId}:${params.method ?? "Fixture.hold"}`;
+        write({ id: held.get(key), result: { released: true } });
+        held.delete(key);
         write({ id, result: {} });
         break;
+      }
       case "Fixture.end":
         output.end();
         break;
@@ -57,6 +62,11 @@ input.on("data", chunk => {
       }
       case "Fixture.detach":
         write({ method: "Target.detachedFromTarget", params: { sessionId: params.sessionId } });
+        write({ id, result: {} });
+        break;
+      case "Fixture.attachMalformed":
+        write({ method: "Target.attachedToTarget" });
+        write({ method: "Target.attachedToTarget", params: { sessionId: "session-malformed" } });
         write({ id, result: {} });
         break;
       case "Fixture.crash":
