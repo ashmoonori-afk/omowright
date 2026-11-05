@@ -347,6 +347,52 @@ const holderCases = [
     },
   },
   {
+    // #81: the shared connection keeps a snapshot of the options it was
+    // attached with, not the caller's object.
+    label: "mutating the attach options after connect changes neither other holders nor later attaches",
+    async run({ fake, connectAs }) {
+      const options = { dialogPolicy: { accept: true } };
+      await connectAs(options);
+      const other = await connectAs({ dialogPolicy: { accept: true } });
+      options.dialogPolicy.accept = false;
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [true]);
+      // A later attach asking for what was attached shares; one asking for the
+      // mutated policy gets its own connection.
+      await connectAs({ dialogPolicy: { accept: true } });
+      await connectAs({ dialogPolicy: { accept: false } });
+      assert.deepEqual(fake.upgrades, ["first", "first"]);
+      // The live policy reached through a handle can't be changed in place.
+      assert.throws(() => {
+        other.cdp.dialogPolicy.accept = false;
+      }, TypeError);
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [true, false]);
+    },
+  },
+  {
+    // #82: an unsubscribe also drops the handle's record of it, so a handle
+    // that subscribes and unsubscribes N times tracks nothing afterwards. A
+    // record left behind would run again on clearListeners() or close() and
+    // remove the same function another holder registered since.
+    label: "a handle that subscribes and unsubscribes keeps nothing to remove later",
+    async run({ fake, connectAs }) {
+      const churning = await connectAs();
+      const other = await connectAs();
+      const heard = [];
+      const listener = () => heard.push("other");
+      for (let i = 0; i < 50; i += 1) {
+        churning.cdp.transportEvents.on("disconnected", listener)();
+        churning.cdp.on("Target.targetCreated", listener)();
+      }
+      other.cdp.transportEvents.on("disconnected", listener);
+      churning.cdp.transportEvents.clearListeners();
+      await churning.close();
+      const dropped = nextTransportEvent(other, "disconnected");
+      fake.dropConnections();
+      await dropped;
+      assert.deepEqual(heard, ["other"]);
+    },
+  },
+  {
     label: "a property set or defined on a handle stays on that handle",
     async run({ connectAs }) {
       const writer = await connectAs();
