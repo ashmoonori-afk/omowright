@@ -348,7 +348,21 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
     }
 
     return monitor.takeSnapshot();
-  })()`)}function collectTrackedSessionIds(xn,jn){let Vn=new Set;jn&&Vn.add(jn);for(let jn of xn.frameManager.frames.values())Vn.add(jn.sessionId);return Vn}async function waitForNavigationReadiness(xn,jn=`interactive`,Vn=ACTION_MAX_WAIT_MS){return await Promise.race([waitForNavigationReadinessInner(xn,jn,Vn),sleep$12(Vn+1e3).then(()=>{throw new NavigationReadinessTimeoutError(jn,Vn)})])}async function waitForNavigationDomQuiet(page, budgetMs) {
+  })()`)}function collectTrackedSessionIds(xn,jn){let Vn=new Set;jn&&Vn.add(jn);for(let jn of xn.frameManager.frames.values())Vn.add(jn.sessionId);return Vn}
+async function waitForNavigationReadiness(page, mode = `interactive`, timeoutMs = ACTION_MAX_WAIT_MS) {
+  let timer;
+  try {
+    return await Promise.race([
+      waitForNavigationReadinessInner(page, mode, timeoutMs),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new NavigationReadinessTimeoutError(mode, timeoutMs)), timeoutMs + 1000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function waitForNavigationDomQuiet(page, budgetMs) {
   if (budgetMs <= 0) return;
   await page.evaluate((budgetMs) => new Promise(resolve => {
     let observer, quietTimer;
