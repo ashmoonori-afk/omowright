@@ -32,6 +32,12 @@ async function lockLinux(fd) {
 
 export async function tryAcquire(lockPath) {
   const platform = process.platform;
+  // Bun on Windows drops libuv's exclusive-open bit. Use the same kernel
+  // share reservation directly; Node and non-Windows runtimes never load FFI.
+  if (platform === "win32" && process.versions.bun) {
+    const { tryAcquireWindows } = await import("./lock-backend-win32.js");
+    return tryAcquireWindows(lockPath);
+  }
   let flags = constants.O_RDWR | constants.O_CREAT;
   if (platform === "darwin") flags |= DARWIN_EXCLUSIVE_NONBLOCK;
   else if (platform === "win32") flags |= WINDOWS_EXCLUSIVE;
