@@ -73,6 +73,35 @@ test("connectPipe quits the browser it spawned when the browser never becomes re
   }
 });
 
+// A browser that dies during the readiness check must fail the launch once with
+// its exit, not be relaunched by each readiness retry with a fresh budget (#123).
+test("connectPipe rejects once, within the readiness budget, when the browser exits before ready", { timeout: 20_000 }, async () => {
+  const dir = scratchDir();
+  const logPath = path.join(dir, "starts.log");
+  const readinessTimeoutMs = 5_000;
+  let budgetTimer;
+  const budget = new Promise((resolve) => { budgetTimer = setTimeout(() => resolve("budget expired"), readinessTimeoutMs); });
+  try {
+    const outcome = await Promise.race([
+      connectPipe({
+        browserPath: process.execPath,
+        browserArgs: [fixture],
+        spawnOptions: { env: { ...process.env, FAKE_BROWSER_MODE: "exit-early", FAKE_SIGNAL_LOG: logPath } },
+        readinessTimeoutMs,
+      }).then(() => "resolved", (error) => error),
+      budget,
+    ]);
+    assert.ok(outcome instanceof Error, `connectPipe did not reject within the readiness budget: ${outcome}`);
+    assert.match(outcome.message, /exited before it became ready/);
+    assert.match(outcome.message, /exit code 1/);
+    assert.match(outcome.message, /FATAL: fake browser cannot start/);
+    assert.equal(readEvents(logPath).filter(({ event }) => event === "START").length, 1);
+  } finally {
+    clearTimeout(budgetTimer);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- Browser lifecycle: Chrome must get a graceful quit before any SIGKILL. ---
 // Chrome deletes its per-launch macOS code-sign clone and temp profile only on a
 // clean exit, so a SIGKILL that skips the quit leaks both (omo#12067). These
