@@ -114,6 +114,14 @@ function startFixtureServer() {
 
 test("requestHuman continues when until url matches and removes the banner", async () => {
   const page = createFakePage({ url: "https://example.test/done", bringToFrontError: new Error("focus denied") });
+  // A loaded host can spend the whole budget before the first check; stall
+  // past it on purpose so the result never depends on scheduling.
+  const bringToFront = page.bringToFront;
+  page.bringToFront = () => {
+    const stallStart = performance.now();
+    while (performance.now() - stallStart < 45);
+    return bringToFront();
+  };
   const result = await requestHuman(page, { prompt: "Finish login", until: { url: "/done" }, pollMs: 5, timeoutMs: 30 });
   assert.equal(result.outcome, "continued");
   assert.equal(result.reason, "until");
