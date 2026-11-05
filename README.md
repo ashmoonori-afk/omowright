@@ -150,7 +150,15 @@ sleep to tune.
   instance with liveness. The registry directory is owner-only (mode `0700`; on
   Windows a protected ACL), so on Windows it must live on a volume with ACLs:
   on FAT32, exFAT or a share without ACLs `connectNamed` throws instead of
-  leaving the registry open.
+  leaving the registry open. The registry must be on a local filesystem;
+  network filesystems (NFS/SMB) do not provide the cross-process guarantees
+  required here. Linux needs the `flock` utility from util-linux or BusyBox.
+  Locks are kernel-held and released on process exit; their zero-byte `.flock`
+  files persist. Never delete or rename a `.flock` while clients use the registry.
+  **Upgrading from 0.1.0:** stop all clients sharing a registry before upgrading
+  them together; old and new versions use different locks and must not overlap.
+  Legacy `.lock`, `.lock.*.stale`, and `.lock.*.tmp` files are ignored and left
+  untouched; remove them manually only after all clients have upgraded.
 - **Shared attaches.** Chrome asks the user to allow remote debugging once per
   connection to their own profile, so `connect(url)` and `connectNamed`
   attaches in one process share one CDP connection per browser (keyed by its

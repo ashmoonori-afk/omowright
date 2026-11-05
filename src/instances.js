@@ -39,10 +39,6 @@ const BROWSER_CLOSE_TIMEOUT_MS = 2_000;
 const LOCK_TIMEOUT_MARGIN_MS = 5_000;
 // Same sum the per-call resolver below computes, for callers with no overrides.
 const DEFAULT_LOCK_TIMEOUT_MS = resolveLockTimeoutMs({});
-// A lock whose content never became readable counts as held until it is older
-// than any legitimate hold: an unreadable lock is far more likely to be a
-// contender caught mid-acquire than an abandoned file.
-const STALE_LOCK_GRACE_MS = DEFAULT_LOCK_TIMEOUT_MS;
 
 function normalizeName(name) {
   if (
@@ -61,7 +57,7 @@ function registryPaths(registryRoot, name) {
   return {
     root,
     recordPath: path.join(root, `${name}.json`),
-    lockPath: path.join(root, `${name}.lock`),
+    lockPath: path.join(root, `${name}.flock`),
   };
 }
 
@@ -182,7 +178,6 @@ function resolveLockTimeoutMs(options) {
 function nameLockOptions(options) {
   return {
     timeoutMs: resolveLockTimeoutMs(options),
-    staleGraceMs: STALE_LOCK_GRACE_MS,
   };
 }
 
@@ -381,10 +376,10 @@ export async function withEngineLock(registryRoot, engineKey, run) {
     .update(path.resolve(engineKey))
     .digest("hex")
     .slice(0, 16);
-  const lockPath = path.join(root, `_engine-${digest}.lock`);
+  const lockPath = path.join(root, `_engine-${digest}.flock`);
   return withLock(
     lockPath,
-    { timeoutMs: DEFAULT_LOCK_TIMEOUT_MS, staleGraceMs: STALE_LOCK_GRACE_MS },
+    { timeoutMs: DEFAULT_LOCK_TIMEOUT_MS },
     run,
   );
 }
