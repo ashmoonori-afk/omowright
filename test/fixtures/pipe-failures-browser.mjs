@@ -55,6 +55,10 @@ input.on("data", chunk => {
         // A process that outlives this one and keeps the parent's read pipe open,
         // like a browser helper that inherited the CDP fd.
         const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], {
+          // libuv assigns non-detached Windows children to a kill-on-parent-exit
+          // job. Escape it so this helper really outlives the browser (#193).
+          // https://github.com/libuv/libuv/blob/v1.51.0/src/win/process.c
+          detached: process.platform === "win32",
           stdio: ["ignore", "ignore", "ignore", "ignore", 4],
         });
         write({ id, result: { pid: holder.pid } });
