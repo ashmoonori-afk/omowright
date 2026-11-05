@@ -18,6 +18,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -750,33 +751,48 @@ test("a lock waiter looks a live holder's start time up once per acquire", async
 // cache keyed by pid alone compares A's start with Q's and deletes Q's live
 // lock, leaving two holders. Test seam: the lookup is injected because no test
 // can make the OS hand a chosen pid to a new process.
-test("a lock waiter never reclaims a live lock taken by a holder that reused the previous holder's pid", async () => {
+for (let repetition = 1; repetition <= (process.platform === "win32" ? 30 : 1); repetition += 1) {
+test(`a lock waiter never reclaims a live lock taken by a holder that reused the previous holder's pid [repetition ${repetition}]`, { timeout: 60_000 }, async () => {
   const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
   const lockPath = path.join(registryRoot, "pid-reuse.lock");
   const lockText = (start, token) =>
     `${JSON.stringify({ pid: process.pid, start, token, acquiredAt: new Date().toISOString() })}\n`;
   const lookups = [];
-  let liveStart = "holder A start";
+  const observedNextHolder = new Error("looked up holder Q instead of reusing holder A's start");
   let ran = false;
   try {
     await writeFile(lockPath, lockText("holder A start", "holder-a"), { mode: 0o600 });
     const startTimeOf = async (pid) => {
       lookups.push(pid);
-      const start = liveStart;
       if (lookups.length === 1) {
         // A exits right after the waiter's lookup; Q reuses its pid and locks.
-        liveStart = "holder Q start";
         const next = `${lockPath}.q.tmp`;
         await writeFile(next, lockText("holder Q start", "holder-q"), { mode: 0o600 });
-        await rename(next, lockPath);
+        // Windows can refuse replacement while a scanner has either file open.
+        // Yield on sharing errors, but never let failed setup look like a timeout.
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            await rename(next, lockPath);
+            break;
+          } catch (error) {
+            if (!["EPERM", "EBUSY", "EACCES"].includes(error?.code) || attempt === 99) throw error;
+            await setImmediate();
+          }
+        }
+        assert.equal(JSON.parse(await readFile(lockPath, "utf8")).token, "holder-q");
+        return "holder A start";
       }
-      return start;
+      // The second lookup is the contract: a pid-only cache skips it and
+      // reclaims Q. Stop on that observation, not on a wall-clock deadline that
+      // can expire before even the first lookup on a loaded Windows runner.
+      assert.equal(JSON.parse(await readFile(lockPath, "utf8")).token, "holder-q");
+      throw observedNextHolder;
     };
     await assert.rejects(
-      withLock(lockPath, { timeoutMs: 1_000, staleGraceMs: 60_000, startTimeOf }, () => {
+      withLock(lockPath, { timeoutMs: 60_000, staleGraceMs: 60_000, startTimeOf }, () => {
         ran = true;
       }),
-      /timed out waiting for instance lock held by pid/,
+      (error) => error === observedNextHolder,
     );
     assert.equal(ran, false);
     assert.equal(JSON.parse(await readFile(lockPath, "utf8")).token, "holder-q");
@@ -785,6 +801,8 @@ test("a lock waiter never reclaims a live lock taken by a holder that reused the
     await rm(registryRoot, { recursive: true, force: true });
   }
 });
+
+}
 
 // Cost contract (#104): the registry root carries an inheritable owner-only
 // grant, so a lock file created in it already admits only its owner and no
