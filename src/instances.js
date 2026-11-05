@@ -169,7 +169,7 @@ function resolveLockTimeoutMs(options) {
   if (options.lockTimeoutMs !== undefined) return options.lockTimeoutMs;
   return (
     (options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS) +
-    (options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS) +
+    (options.probeTimeoutMs ?? resolveConnectTimeoutMs(options)) +
     resolveConnectTimeoutMs(options) +
     LOCK_TIMEOUT_MARGIN_MS
   );
@@ -402,7 +402,9 @@ async function attachOrLaunch(normalizedName, paths, options) {
       try {
         version = await probeEndpoint(
           loaded.record.endpoint,
-          options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
+          // Attaching is not a one-second listInstances health check. A
+          // healthy holder may still be busy finishing startup under load.
+          options.probeTimeoutMs ?? resolveConnectTimeoutMs(options),
         );
       } catch (error) {
         if (!isConnectionRefused(error)) {
