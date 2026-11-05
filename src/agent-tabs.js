@@ -42,7 +42,10 @@ export class AgentTabManager {
     // paints (Page.captureScreenshot hangs) and requestAnimationFrame never fires.
     // Its own window doesn't take focus from the user's tab, and the tab renders
     // (verified headed on Linux and macOS).
-    const result = await this.#connection.cdp.send("Target.createTarget", { url, background: true, newWindow: true }, undefined, { capability: CAPABILITY });
+    const result = await this.#connection.cdp.send("Target.createTarget", {
+      url, background: true, newWindow: true,
+      ...(options.browserContextId ? { browserContextId: options.browserContextId } : {}),
+    }, undefined, { capability: CAPABILITY });
     const targetId = result.targetId;
     // CloakBrowser headless defers renderer startup for background targets until
     // activation; activating before attach avoids Page.enable timing out.

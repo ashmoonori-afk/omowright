@@ -1,3 +1,13 @@
+export function cookieToCdp(cookie) {
+  const { name, value, url, domain, path, httpOnly, secure, sameSite } = cookie;
+  const out = { name, value, url, domain, path, httpOnly, secure, sameSite };
+  if (cookie.expires !== undefined && cookie.expires !== -1) out.expires = cookie.expires;
+  if (cookie.partitionKey !== undefined) {
+    out.partitionKey = { topLevelSite: cookie.partitionKey, hasCrossSiteAncestor: true };
+  }
+  return out;
+}
+
 export function sanitizeCookies(cookies) {
   const byKey = new Map();
   for (const cookie of cookies) {
@@ -25,5 +35,5 @@ export function sanitizeCookies(cookies) {
 }
 
 export async function injectCookies(page, cookies) {
-  await page._sendToTarget("Network.setCookies", { cookies: sanitizeCookies(cookies) });
+  await page._sendToTarget("Network.setCookies", { cookies: sanitizeCookies(cookies).map(cookieToCdp) });
 }
