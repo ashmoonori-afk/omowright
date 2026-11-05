@@ -1,0 +1,171 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish; must equal package.json version (for example 0.1.0)"
+        required: true
+        type: string
+      dry_run:
+        description: "Run npm publish --dry-run and skip the tag and release"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+      - run: bun install --frozen-lockfile
+
+      # Ubuntu 24.04 runners restrict unprivileged user namespaces via AppArmor,
+      # which makes Chromium's sandbox abort (SIGTRAP) at launch.
+      - name: Allow unprivileged user namespaces for the Chromium sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install chrome-headless-shell
+        id: browser
+        shell: bash
+        run: |
+          out=$(bunx @puppeteer/browsers install chrome-headless-shell@stable --path "$RUNNER_TEMP/browsers")
+          bin=$(printf '%s\n' "$out" | tail -n 1 | awk '{print $2}')
+          test -x "$bin"
+          "$bin" --version
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+      - name: bun test
+        env:
+          SHELL_BIN: ${{ steps.browser.outputs.bin }}
+          CLOAKBROWSER_BIN: ${{ steps.browser.outputs.bin }}
+        shell: bash
+        run: bun run test 2>&1 | tee "$RUNNER_TEMP/bun-test.log"
+
+      - name: node --test
+        env:
+          SHELL_BIN: ${{ steps.browser.outputs.bin }}
+          CLOAKBROWSER_BIN: ${{ steps.browser.outputs.bin }}
+        shell: bash
+        run: bun run test:node 2>&1 | tee "$RUNNER_TEMP/node-test.log"
+
+      - name: Workflow summary
+        if: always()
+        shell: bash
+        run: |
+          count() { grep -E "$2" "$1" 2>/dev/null | tail -n 1 | grep -oE '[0-9]+' | head -n 1; }
+          {
+            echo "## Publish test (${{ job.status }})"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Status | ${{ job.status }} |"
+            echo "| Runner | ${{ runner.os }} |"
+            echo "| Browser | ${{ steps.browser.outputs.bin }} |"
+            echo "| bun test pass / fail | $(count "$RUNNER_TEMP/bun-test.log" '^ *[0-9]+ pass$') / $(count "$RUNNER_TEMP/bun-test.log" '^ *[0-9]+ fail$') |"
+            echo "| node --test pass / fail | $(count "$RUNNER_TEMP/node-test.log" '^ℹ pass [0-9]+') / $(count "$RUNNER_TEMP/node-test.log" '^ℹ fail [0-9]+') |"
+            echo "| Ref | ${{ github.ref_name }} |"
+            echo "| Commit | ${{ github.sha }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: publish
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing (OIDC) needs npm >= 11.5.1.
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - name: Verify version and target
+        shell: bash
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$pkg" != "$VERSION" ]; then
+            echo "::error::package.json version is $pkg but the input version is $VERSION"
+            exit 1
+          fi
+          if [ "$DRY_RUN" != "true" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::a real publish must run from main, not $GITHUB_REF"
+              exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+              echo "::error::tag v$VERSION already exists"
+              exit 1
+            fi
+            if npm view "omowright@$VERSION" version 2>/dev/null | grep -q .; then
+              echo "::error::omowright@$VERSION is already on npm"
+              exit 1
+            fi
+          fi
+
+      - name: npm publish
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          args=(publish --provenance --access public)
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          npm "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/npm-publish.log"
+
+      - name: Tag and release
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag "v$VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/v$VERSION"
+          gh release create "v$VERSION" --verify-tag --title "v$VERSION" --generate-notes
+
+      - name: Workflow summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Publish (${{ job.status }})"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Status | ${{ job.status }} |"
+            echo "| Version | $VERSION |"
+            echo "| Dry run | $DRY_RUN |"
+            echo "| Tarball | $(grep -oE 'omowright-[0-9][^ ]*\.tgz' "$RUNNER_TEMP/npm-publish.log" 2>/dev/null | tail -n 1) |"
+            echo "| Ref | ${{ github.ref_name }} |"
+            echo "| Commit | ${{ github.sha }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
