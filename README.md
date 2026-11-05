@@ -51,6 +51,40 @@ await browser.close();
 Re-snapshots come back as a unified diff against the previous tree, so a model
 reads what changed instead of the whole page again.
 
+## Snapshot size
+
+Token counts per page (o200k_base, from the `gpt-tokenizer` devDependency),
+each read right after `page.goto()`: the raw HTML
+(`document.documentElement.outerHTML`), `compactSnapshot(await page.snapshot())`
+and `compactSnapshot(await page.snapshot({ interactive: true }))`. Measured on
+2026-11-05 (UTC) at commit `4845ef5` with Chrome for Testing 156.0.8078.4
+(headless shell) on Linux.
+
+| Page | Shape | Raw HTML | Snapshot | Interactive snapshot | Snapshot / HTML | Interactive / HTML |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| news.ycombinator.com | link-heavy | 11,615 | 4,220 | 3,811 | 36.3% | 32.8% |
+| en.wikipedia.org/wiki/Web_browser | long article | 143,312 | 14,155 | 12,591 | 9.9% | 8.8% |
+| github.com/code-yeongyu/omowright \* | app-like | 116,378 | 5,432 | 5,481 | 4.7% | 4.7% |
+| example.com | trivial | 637 | 222 | 222 | 34.9% | 34.9% |
+| httpbin.org/forms/post | form | 428 | 370 | 245 | 86.4% | 57.2% |
+
+\* The interactive snapshot is read after the full one, and here it came out
+larger, so the page likely changed between the two reads: `page.goto()` can
+resolve before a page like this has loaded
+([#152](https://github.com/code-yeongyu/omowright/issues/152)). The next run
+read 111,370 / 5,262 / 4,443 tokens (4.7% / 4.0%).
+
+Live pages drift, so reruns differ; the raw HTML varies most (Wikipedia read
+143,312 and then 92,100 HTML tokens in two runs in a row, and 14,155 and then
+12,925 snapshot tokens).
+
+Reproduce after `bun install` (any Chromium works for `--browser`, or set
+`OMOWRIGHT_BENCH_BROWSER`):
+
+```bash
+node scripts/bench-snapshot-tokens.mjs --browser ~/.cache/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell --browser-arg=--no-sandbox
+```
+
 ## Scrolling is a first-class problem
 
 Most of the web an agent cares about is behind a scroll: feeds, search results,
