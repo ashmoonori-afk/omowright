@@ -2,13 +2,153 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PipeCdpClient, connectPipe } from "../src/pipe.js";
+import { CdpCommandTimeoutError, CdpPipeClosedError, CdpSessionCrashedError, CdpSessionDetachedError, PipeCdpClient, connectPipe } from "../src/index.js";
 import { TERM_GRACE_MS, fixture, lifecycleClient, readEvents, scratchDir, spawnCaller, waitFor } from "./fixtures/browser-lifecycle.mjs";
 
 const harness = fileURLToPath(new URL("./fixtures/pipe-leak-harness.mjs", import.meta.url));
+const failureBrowser = fileURLToPath(new URL("./fixtures/pipe-failures-browser.mjs", import.meta.url));
+
+async function failureClient(t) {
+  const client = new PipeCdpClient({ browserPath: process.execPath, browserArgs: [failureBrowser], logId: "pipe-failure-test" });
+  t.after(async () => {
+    const child = client.childProcess;
+    if (child?.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit");
+      child.kill("SIGTERM");
+      await exited;
+    }
+    await client.close();
+  });
+  await client.ensureConnected();
+  return client;
+}
+
+async function holdCommand(client, sessionId, opts = { timeoutMs: 1000 }) {
+  const { promise, resolve } = Promise.withResolvers();
+  const off = client.on("Fixture.held", params => { if (params.sessionId === sessionId) resolve(); });
+  const outcome = client.send("Fixture.hold", undefined, sessionId, opts)
+    .then(result => ({ result }), error => ({ error }));
+  try {
+    await Promise.race([promise, outcome.then(() => assert.fail("command settled before the child acknowledged it"))]);
+  } finally {
+    off();
+  }
+  return { outcome };
+}
+
+test("pipe timeout identifies its launch, session, target and absence of reply bytes", { timeout: 15_000 }, async t => {
+  const client = await failureClient(t);
+  const launches = new Set();
+  for (let run = 0; run < 2; run++) {
+    await client.ensureConnected();
+    const pid = client.childProcess.pid;
+    const { sessionId } = await client.send("Target.attachToTarget", { targetId: "target-a", flatten: true });
+    await assert.rejects(client.send("Fixture.silent", undefined, sessionId, { timeoutMs: 100 }), error => {
+      assert.ok(error instanceof CdpCommandTimeoutError);
+      assert.equal(error.name, "CdpCommandTimeoutError");
+      assert.equal(error.method, "Fixture.silent");
+      assert.equal(error.sessionId, sessionId);
+      assert.equal(error.targetId, "target-a");
+      assert.equal(error.launchId, `pipe-failure-test:${pid}`);
+      assert.ok(error.elapsedSinceLaunchMs >= error.commandElapsedMs);
+      assert.equal(error.receivedReplyBytes, false);
+      assert.equal(error.receivedBytesSinceSend, 0);
+      for (const key of ["launchId", "sessionId", "targetId", "elapsedSinceLaunchMs", "receivedReplyBytes"]) {
+        assert.ok(error.message.includes(`${key}=${error[key]}`), `timeout omits ${key}`);
+      }
+      assert.ok(error.message.includes("Fixture.silent"));
+      launches.add(error.launchId);
+      return true;
+    });
+    await client.close();
+  }
+  assert.equal(launches.size, 2);
+});
+
+test("pipe timeout distinguishes incoming traffic from an answered command", { timeout: 10_000 }, async t => {
+  const client = await failureClient(t);
+  await assert.rejects(client.send("Fixture.traffic", undefined, undefined, { timeoutMs: 100 }), error => {
+    assert.ok(error instanceof CdpCommandTimeoutError);
+    assert.equal(error.sessionId, null);
+    assert.equal(error.targetId, null);
+    assert.equal(error.receivedReplyBytes, true);
+    assert.ok(error.receivedBytesSinceSend > 0);
+    return true;
+  });
+});
+
+test("pipe timeout counts malformed complete frames without losing later valid replies", { timeout: 10_000 }, async t => {
+  const client = await failureClient(t);
+  await assert.rejects(client.send("Fixture.malformed", undefined, undefined, { timeoutMs: 100 }), error => {
+    assert.equal(error.malformedFrameCount, 1);
+    assert.ok(error.message.includes("malformedFrameCount=1"));
+    return true;
+  });
+  assert.equal((await client.send("Browser.getVersion")).product, "PipeFixture/1.0");
+});
+
+for (const event of ["end", "close"]) {
+  test(`pipe ${event} rejects pending commands while the child is still alive`, { timeout: 10_000 }, async t => {
+    const client = await failureClient(t);
+    const { outcome } = await holdCommand(client, "session-a");
+    let trigger;
+    if (event === "end") {
+      trigger = client.send("Fixture.end", undefined, undefined, { timeoutMs: 1000 })
+        .then(result => ({ result }), error => ({ error }));
+    } else {
+      // Destroy the real parent fd: this emits close without a readable end.
+      client.childProcess.stdio[4].destroy();
+    }
+    const { error } = await outcome;
+    assert.ok(error instanceof CdpPipeClosedError, `expected CdpPipeClosedError, got ${error}`);
+    assert.equal(error.method, "Fixture.hold");
+    assert.equal(error.sessionId, "session-a");
+    assert.equal(client.childProcess.exitCode, null);
+    assert.equal(client.childProcess.signalCode, null);
+    if (trigger) assert.ok((await trigger).error instanceof CdpPipeClosedError);
+  });
+}
+
+// A helper process that inherited the CDP fd keeps the old launch's pipe open
+// after close(); its EOF must not fail the commands of the launch that replaced it.
+test("a previous launch's pipe EOF leaves the relaunched browser's pending commands alone", { timeout: 15_000 }, async t => {
+  const client = await failureClient(t);
+  const { pid: holderPid } = await client.send("Fixture.shareOutput");
+  t.after(() => { try { process.kill(holderPid, "SIGKILL"); } catch {} });
+  const oldPipe = client.childProcess.stdio[4];
+  const oldPipeClosed = once(oldPipe, "close");
+  await client.close();
+  assert.equal(oldPipe.readableEnded, false, "the helper should still hold the old pipe open");
+  await client.ensureConnected();
+  const { outcome } = await holdCommand(client, "session-a", {});
+  process.kill(holderPid, "SIGKILL");
+  await oldPipeClosed;
+  await client.send("Fixture.release", { sessionId: "session-a" });
+  assert.deepEqual(await outcome, { result: { released: true } });
+});
+
+for (const [action, ErrorType] of [["detach", CdpSessionDetachedError], ["crash", CdpSessionCrashedError]]) {
+  test(`pipe session ${action} rejects only that session's pending commands`, { timeout: 10_000 }, async t => {
+    const client = await failureClient(t);
+    const { sessionId } = await client.send("Target.attachToTarget", { targetId: "target-a", flatten: true });
+    const affected = await holdCommand(client, sessionId);
+    const other = await holdCommand(client, "session-b");
+    const browser = await holdCommand(client, undefined);
+    await client.send(`Fixture.${action}`, { sessionId });
+    await client.send("Fixture.release", { sessionId: "session-b" });
+    await client.send("Fixture.release", {});
+    const { error } = await affected.outcome;
+    assert.ok(error instanceof ErrorType, `expected ${ErrorType.name}, got ${error}`);
+    assert.equal(error.sessionId, sessionId);
+    assert.equal(error.targetId, "target-a");
+    assert.deepEqual(await other.outcome, { result: { released: true } });
+    assert.deepEqual(await browser.outcome, { result: { released: true } });
+  });
+}
 
 const ALLOCATOR_LINE =
   "Trying to load the allocator multiple times. This is *not* supported.";
