@@ -208,6 +208,14 @@ sleep to tune.
 ## Install
 
 ```bash
+npm i omowright
+# or
+bun add omowright
+```
+
+To track unreleased changes, install from GitHub instead:
+
+```bash
 bun add github:code-yeongyu/omowright
 ```
 
@@ -233,8 +241,9 @@ safely. Task presets live in `presets/`:
 | `presets/agent-events` | Tab, popup and download push events |
 | `presets/cloak-bridge` | The MV3 bridge extension and native-messaging host |
 
-Install the skill by copying or symlinking `skills/omowright` into your
-harness's skills directory (for example `~/.agents/skills/omowright`). The
+Install the skill by copying or symlinking `skills/omowright` (in an npm
+install, `node_modules/omowright/skills/omowright`) into your harness's
+skills directory (for example `~/.agents/skills/omowright`). The
 agent-facing tool reference is [`TOOLS.md`](TOOLS.md); machine-readable schemas
 ship as the `toolSchemas` export.
 

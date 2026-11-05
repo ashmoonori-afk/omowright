@@ -1,6 +1,6 @@
 {
   "name": "omowright",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "type": "module",
   "description": "OmOWright browser automation for standard Chromium CDP endpoints.",
   "license": "MIT",
@@ -27,12 +27,26 @@
     "bun": ">=1.4"
   },
   "bin": {
-    "omowright-cloak": "./bin/omowright-cloak.mjs"
+    "omowright-cloak": "bin/omowright-cloak.mjs"
   },
   "exports": {
     ".": "./src/index.js"
   },
+  "files": [
+    "src/",
+    "bin/",
+    "skills/",
+    "presets/",
+    "README.md",
+    "LICENSE",
+    "TOOLS.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
+    "preversion": "git diff --quiet HEAD --",
     "test": "bun test test/no-raw-tls-client.test.mjs test/running-browser.test.mjs test/branding.test.mjs test/hygiene.test.mjs test/llm.test.mjs test/integration.test.mjs test/interaction.test.mjs test/getby-locators.test.mjs test/captcha.test.mjs test/captcha.integration.test.mjs test/chrome.test.mjs test/cookies.test.mjs test/scoped-endpoint.test.mjs test/pipe.test.mjs test/browser-pidfile.test.mjs test/instances.test.mjs test/instances-shared-connection.test.mjs test/cloak-profile.test.mjs test/cloak-profile.integration.test.mjs test/events.test.mjs test/agent-tabs.test.mjs test/events.integration.test.mjs test/bridge-transport.test.mjs test/bridge-host-dir.test.mjs test/skill-docs.test.mjs test/dialogs.test.mjs test/emulate.test.mjs test/frames-snapshot.test.mjs test/frames-snapshot.live-attach.test.mjs test/har.test.mjs test/human-handoff.test.mjs test/index-exports.test.mjs test/layers.test.mjs test/network-snoop.test.mjs test/routes.test.mjs test/routes.live.test.mjs test/scroll-collect.test.mjs test/trace.test.mjs test/trace.live.test.mjs test/bsk-ipc-client.test.mjs test/bsk-session.test.mjs test/bsk-session-cooperate.test.mjs test/bsk-snapshot.test.mjs test/bsk-external-extension.test.mjs test/bsk-browser-choice.test.mjs test/bsk-doctor.test.mjs test/bsk-daemon-start.test.mjs",
     "test:node": "node --test test/no-raw-tls-client.test.mjs test/running-browser.test.mjs test/branding.test.mjs test/hygiene.test.mjs test/llm.test.mjs test/integration.test.mjs test/interaction.test.mjs test/getby-locators.test.mjs test/captcha.test.mjs test/captcha.integration.test.mjs test/chrome.test.mjs test/cookies.test.mjs test/scoped-endpoint.test.mjs test/pipe.test.mjs test/browser-pidfile.test.mjs test/instances.test.mjs test/instances-shared-connection.test.mjs test/cloak-profile.test.mjs test/cloak-profile.integration.test.mjs test/events.test.mjs test/agent-tabs.test.mjs test/events.integration.test.mjs test/bridge-transport.test.mjs test/bridge-host-dir.test.mjs test/skill-docs.test.mjs test/dialogs.test.mjs test/emulate.test.mjs test/frames-snapshot.test.mjs test/frames-snapshot.live-attach.test.mjs test/har.test.mjs test/human-handoff.test.mjs test/index-exports.test.mjs test/layers.test.mjs test/network-snoop.test.mjs test/routes.test.mjs test/routes.live.test.mjs test/scroll-collect.test.mjs test/trace.test.mjs test/trace.live.test.mjs test/bsk-ipc-client.test.mjs test/bsk-session.test.mjs test/bsk-session-cooperate.test.mjs test/bsk-snapshot.test.mjs test/bsk-external-extension.test.mjs test/bsk-browser-choice.test.mjs test/bsk-doctor.test.mjs test/bsk-daemon-start.test.mjs",
     "test:cloak-profile": "node --test test/cloak-profile.test.mjs test/cloak-profile.integration.test.mjs",
