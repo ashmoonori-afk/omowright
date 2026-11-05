@@ -4,7 +4,6 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { rmSync } from "node:fs";
-import { createConnection } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CdpCommandTimeoutError, CdpPipeClosedError, CdpSessionCrashedError, CdpSessionDetachedError, PipeCdpClient, connectPipe } from "../src/index.js";
@@ -118,21 +117,11 @@ for (const event of ["end", "close"]) {
 // after close(); its EOF must not fail the commands of the launch that replaced it.
 test("a previous launch's pipe EOF leaves the relaunched browser's pending commands alone", { timeout: 15_000 }, async t => {
   const client = await failureClient(t);
-  let holderReady = false;
-  client.on("Fixture.holderReady", () => { holderReady = true; });
-  const { pid: holderPid, probe } = await client.send("Fixture.shareOutput");
-  console.log("PIPE_INHERITANCE_PROBE", process.platform, process.version, probe, { holderReady });
+  const { pid: holderPid } = await client.send("Fixture.shareOutput");
   t.after(() => { try { process.kill(holderPid, "SIGKILL"); } catch {} });
   const oldPipe = client.childProcess.stdio[4];
   const oldPipeClosed = once(oldPipe, "close");
   await client.close();
-  console.log("PIPE_AFTER_CLOSE", { readableEnded: oldPipe.readableEnded, destroyed: oldPipe.destroyed });
-  const socket = createConnection({ host: "127.0.0.1", port: probe.port });
-  t.after(() => socket.destroy());
-  await once(socket, "connect");
-  const reply = once(socket, "data");
-  socket.write("probe");
-  console.log("PIPE_HOLDER_AFTER_CLOSE", String((await reply)[0]));
   assert.equal(oldPipe.readableEnded, false, "the helper should still hold the old pipe open");
   await client.ensureConnected();
   const { outcome } = await holdCommand(client, "session-a", {});

@@ -49,32 +49,14 @@ input.on("data", chunk => {
       case "Fixture.shareOutput": {
         // A process that outlives this one and keeps the parent's read pipe open,
         // like a browser helper that inherited the CDP fd.
-        const holder = spawn(process.execPath, ["-e", `
-          const fs = require("node:fs");
-          const net = require("node:net");
-          let probe;
-          try {
-            fs.writeSync(4, JSON.stringify({method:"Fixture.holderReady",params:{}}) + "\\0");
-            probe = { writable: true };
-          } catch (error) { probe = { writable: false, code: error.code }; }
-          const server = net.createServer(socket => {
-            socket.once("data", () => {
-              let after;
-              try {
-                fs.writeSync(4, JSON.stringify({method:"Fixture.holderAfterClose",params:{}}) + "\\0");
-                after = { writable: true };
-              } catch (error) { after = { writable: false, code: error.code }; }
-              socket.end(JSON.stringify(after));
-            });
-          });
-          server.listen(0, "127.0.0.1", () => {
-            process.send({ ...probe, port: server.address().port });
-            process.disconnect();
-          });
-        `], {
-          stdio: ["ignore", "ignore", "ignore", "ignore", 4, "ipc"],
+        const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], {
+          // libuv assigns non-detached Windows children to a kill-on-parent-exit
+          // job. Escape it so this helper really outlives the browser (#193).
+          // https://github.com/libuv/libuv/blob/v1.51.0/src/win/process.c
+          detached: process.platform === "win32",
+          stdio: ["ignore", "ignore", "ignore", "ignore", 4],
         });
-        holder.once("message", probe => write({ id, result: { pid: holder.pid, probe } }));
+        write({ id, result: { pid: holder.pid } });
         break;
       }
       case "Fixture.detach":
