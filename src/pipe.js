@@ -12,36 +12,14 @@ import { BrowserConnection } from "./connection.js";
 import { Dialog, answerWithPolicy, normalizeDialogPolicy } from "./dialog-policy.js";
 import { targetCreationCapability } from "./internal-capability.js";
 import { SerialEmitter as Emittery } from "./serial-emitter.js";
+import { CdpCommandTimeoutError, CdpPipeClosedError, CdpSessionDetachedError, CdpSessionCrashedError } from "./cdp-errors.js";
+export { CdpCommandTimeoutError, CdpPipeClosedError, CdpSessionDetachedError, CdpSessionCrashedError } from "./cdp-errors.js";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const DEFAULT_READINESS_TIMEOUT_MS = 10_000;
 const GRACEFUL_CLOSE_TIMEOUT_MS = 2_000;
 const STDIO_TAIL_LIMIT = 16_384;
 const EXIT_STDERR_DRAIN_MS = 1_000;
-
-class CdpPipeCommandError extends Error {
-  constructor(name, message, details) {
-    super(message);
-    Object.assign(this, details);
-    this.name = name;
-  }
-}
-
-export class CdpCommandTimeoutError extends CdpPipeCommandError {
-  constructor(message, details) { super("CdpCommandTimeoutError", message, details); }
-}
-
-export class CdpPipeClosedError extends CdpPipeCommandError {
-  constructor(message, details) { super("CdpPipeClosedError", message, details); }
-}
-
-export class CdpSessionDetachedError extends CdpPipeCommandError {
-  constructor(message, details) { super("CdpSessionDetachedError", message, details); }
-}
-
-export class CdpSessionCrashedError extends CdpPipeCommandError {
-  constructor(message, details) { super("CdpSessionCrashedError", message, details); }
-}
 
 export class PipeCdpClient {
   #child;
@@ -50,6 +28,7 @@ export class PipeCdpClient {
   #buffer = Buffer.alloc(0);
   #seq = 1;
   #pending = new Map();
+  #closedSessions = new Set();
   #sessionTargets = new Map();
   #launch;
   #launchId;
@@ -116,6 +95,7 @@ export class PipeCdpClient {
     this.#malformedFrameCount = 0;
     this.#buffer = Buffer.alloc(0);
     this.#sessionTargets.clear();
+    this.#closedSessions.clear();
     this.#child.once("exit", () => removeBrowserPidFile(profileDir, browserPid));
     this.#stdioTail = "";
     this.#stderrHead = "";
@@ -242,6 +222,9 @@ export class PipeCdpClient {
       method, sessionId, targetId: params?.targetId ?? this.#sessionTargets.get(sessionId),
       sentAt: performance.now(), receivedBytes: this.#receivedBytes,
     };
+    if (this.#closedSessions.has(sessionId) && method !== "Page.close") {
+      throw this.#commandError(CdpSessionDetachedError, "Page closed", entry);
+    }
     if (this.#readStream.readableEnded || this.#readStream.destroyed) {
       throw this.#commandError(CdpPipeClosedError, "CDP pipe read stream closed", entry);
     }
@@ -275,6 +258,11 @@ export class PipeCdpClient {
     }));
   }
 
+
+  closeSession(sessionId) {
+    this.#closedSessions.add(sessionId);
+    this.#failCommands(CdpSessionDetachedError, "Page closed", sessionId);
+  }
 
   async close() {
     const child = this.#child;
