@@ -689,6 +689,16 @@
 		}
 		return true;
 	}
+	function hasStrongInteractivity(element) {
+		const tag = element.tagName.toLowerCase();
+		if (INTERACTIVE_TAGS.has(tag)) return true;
+		if (element.hasAttribute("onclick")) return true;
+		const tabIndex = element.getAttribute("tabindex");
+		if (tabIndex !== null && tabIndex !== "-1") return true;
+		const role = getExplicitAriaRole(element);
+		if (role === "button" || role === "link") return true;
+		return element.getAttribute("contenteditable") === "true";
+	}
 	function getInteractivitySignals(element) {
 		const tag = element.tagName.toLowerCase();
 		const role = getExplicitAriaRole(element);
@@ -702,7 +712,7 @@
 		let hasPointerInteraction = hasCursorPointer;
 		if (hasCursorPointer && !hasOnClick && !hasTabIndex) {
 			const parent = element.parentElement;
-			if (parent && window.getComputedStyle(parent).cursor === "pointer") hasPointerInteraction = false;
+			if (parent && hasStrongInteractivity(parent)) hasPointerInteraction = false;
 		}
 		const hints = [];
 		if (hasPointerInteraction) hints.push("cursor:pointer");

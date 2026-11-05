@@ -103,3 +103,17 @@ test("bskSnapshot surfaces an in-page failure as an error instead of a partial r
   const failing = { evaluate: async () => ({ ok: false, error: { text: "ReferenceError: document is not defined", line: 1, column: 1 } }) };
   await assert.rejects(bskSnapshot(failing), /document is not defined/);
 });
+
+test("interactive snapshots keep clickable generic tiles whose parent is only a pointer container", { skip: !SHELL && "no chromium binary found", timeout: 60_000 }, async () => {
+  await withPage(async ({ mainWorldEvaluate }) => {
+    const fakeSession = { evaluate: (expression, opts) => mainWorldEvaluate(expression, opts) };
+    const snap = await bskSnapshot(fakeSession, { interactive: true });
+    assert.match(snap.tree, /Card tile/, "a cursor:pointer div inside a pointer container is kept");
+    assert.match(snap.tree, /Icon tile/, "a cursor:pointer span nested twice is kept");
+    assert.match(snap.tree, /Focusable tile/, "a tabindex tile is kept");
+    const names = Object.values(snap.refs).map((meta) => meta.name);
+    assert.ok(names.includes("Card tile"), `refs: ${names}`);
+    const cardRef = Object.entries(snap.refs).find(([, meta]) => meta.name === "Card tile")[0];
+    assert.match(snap.css[cardRef] ?? "", /#card-tile|pointer-generics/, "the tile has a css path");
+  });
+});
