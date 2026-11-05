@@ -51,14 +51,26 @@ input.on("data", chunk => {
         // like a browser helper that inherited the CDP fd.
         const holder = spawn(process.execPath, ["-e", `
           const fs = require("node:fs");
+          const net = require("node:net");
           let probe;
           try {
             fs.writeSync(4, JSON.stringify({method:"Fixture.holderReady",params:{}}) + "\\0");
             probe = { writable: true };
           } catch (error) { probe = { writable: false, code: error.code }; }
-          process.send(probe);
-          process.disconnect();
-          setInterval(() => {}, 1 << 30);
+          const server = net.createServer(socket => {
+            socket.once("data", () => {
+              let after;
+              try {
+                fs.writeSync(4, JSON.stringify({method:"Fixture.holderAfterClose",params:{}}) + "\\0");
+                after = { writable: true };
+              } catch (error) { after = { writable: false, code: error.code }; }
+              socket.end(JSON.stringify(after));
+            });
+          });
+          server.listen(0, "127.0.0.1", () => {
+            process.send({ ...probe, port: server.address().port });
+            process.disconnect();
+          });
         `], {
           stdio: ["ignore", "ignore", "ignore", "ignore", 4, "ipc"],
         });
