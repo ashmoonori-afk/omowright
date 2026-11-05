@@ -8,6 +8,7 @@ import { pageBundle } from "./injected.js";
 import { queryOpenShadowAll } from "./open-shadow-query.js";
 import { targetCreationCapability } from "./internal-capability.js";
 import { normalizeDialogPolicy, resolveDialogAction } from "./dialog-policy.js";
+import { pageRoute, pageUnroute, pageUnrouteAll } from "./page-routes.js";
 
 const __defProp = Object.defineProperty;
 const __exportAll = (definitions, namespace) => {
@@ -1549,6 +1550,16 @@ init_client$6();
 init_session_manager();
 init_frame_manager();
 init_page();
+
+OmOPage.prototype.route = function (url, handler, options) {
+  return pageRoute(this, url, handler, options);
+};
+OmOPage.prototype.unroute = function (url, handler) {
+  return pageUnroute(this, url, handler);
+};
+OmOPage.prototype.unrouteAll = function () {
+  return pageUnrouteAll(this);
+};
 
 export {
   OmOKeyboard,
