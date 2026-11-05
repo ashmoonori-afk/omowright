@@ -10,7 +10,10 @@
 // Like Chrome it quits after answering Browser.close (logged as "CLOSE <epoch
 // ms>"); FAKE_ON_CLOSE=ignore keeps it running, a browser that does not quit
 // when asked over CDP.
-import { appendFileSync, createReadStream, createWriteStream } from "node:fs";
+// FAKE_BROWSER_MODE=exit-early logs "START <epoch ms>", prints one stderr line
+// and exits 1 before reading its CDP pipe: a browser that cannot start (e.g.
+// Chromium's "No usable sandbox!" FATAL). One START line per launch.
+import { appendFileSync, createReadStream, createWriteStream, writeSync } from "node:fs";
 import { Socket } from "node:net";
 
 const mode = process.env.FAKE_BROWSER_MODE ?? "ready";
@@ -18,6 +21,11 @@ const signalLog = process.env.FAKE_SIGNAL_LOG;
 const record = (event) => {
   if (signalLog) appendFileSync(signalLog, `${event} ${Date.now()}\n`);
 };
+if (mode === "exit-early") {
+  record("START");
+  writeSync(2, "FATAL: fake browser cannot start\n");
+  process.exit(1);
+}
 if (process.env.FAKE_ON_TERM) {
   process.on("SIGTERM", () => {
     record("TERM");

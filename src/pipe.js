@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { finished } from "node:stream/promises";
 import {
   browserSpawnDetached,
   profileDirFromArgs,
@@ -16,6 +17,7 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const DEFAULT_READINESS_TIMEOUT_MS = 10_000;
 const GRACEFUL_CLOSE_TIMEOUT_MS = 2_000;
 const STDIO_TAIL_LIMIT = 16_384;
+const EXIT_STDERR_DRAIN_MS = 1_000;
 
 export class PipeCdpClient {
   #child;
@@ -32,6 +34,7 @@ export class PipeCdpClient {
   #browserArgs;
   #spawnOptions;
   #stdioTail = "";
+  #stderrHead = "";
   #dialogPolicy;
   transportEvents = new Emittery();
   logId;
@@ -74,11 +77,14 @@ export class PipeCdpClient {
     const browserPid = this.#child.pid;
     this.#child.once("exit", () => removeBrowserPidFile(profileDir, browserPid));
     this.#stdioTail = "";
-    for (const stream of [this.#child.stdout, this.#child.stderr]) {
+    this.#stderrHead = "";
+    const stderr = this.#child.stderr;
+    for (const stream of [this.#child.stdout, stderr]) {
       if (!stream) continue;
       stream.setEncoding("utf8");
       stream.on("data", (chunk) => {
         this.#stdioTail = (this.#stdioTail + chunk).slice(-STDIO_TAIL_LIMIT);
+        if (stream === stderr) this.#stderrHead = (this.#stderrHead + chunk).slice(0, STDIO_TAIL_LIMIT);
       });
       stream.on("error", () => {});
     }
@@ -104,7 +110,7 @@ export class PipeCdpClient {
     this.#connected = true;
     try {
       await this.#awaitReady();
-      await this.send("Target.setDiscoverTargets", { discover: true }).catch(() => {});
+      await this.#dispatch("Target.setDiscoverTargets", { discover: true }).catch(() => {});
       await this.transportEvents.emit("connected");
     } catch (error) {
       await this.#quitFailedLaunch();
@@ -122,17 +128,28 @@ export class PipeCdpClient {
     await terminateChild(child);
   }
 
+  // Probes go through #dispatch, never send(): send() would relaunch a browser
+  // that exited mid-check, each relaunch with a fresh budget (#123). A browser
+  // that exits fails the launch at once, naming the exit.
   async #awaitReady() {
+    const child = this.#child;
     const deadline = Date.now() + this.#readinessTimeoutMs;
+    const exited = child.exitCode !== null || child.signalCode !== null
+      ? Promise.resolve("exited")
+      : new Promise(resolve => child.once("exit", () => resolve("exited")));
     let lastError;
     while (Date.now() < deadline) {
       try {
-        await this.send("Browser.getVersion", undefined, undefined, { timeoutMs: 1000 });
-        return;
+        const outcome = await Promise.race([
+          this.#dispatch("Browser.getVersion", undefined, undefined, { timeoutMs: 1000 }),
+          exited,
+        ]);
+        if (outcome !== "exited") return;
       } catch (error) {
         lastError = error;
-        await new Promise(resolve => setTimeout(resolve, 100));
       }
+      if (child.exitCode !== null || child.signalCode !== null) throw await this.#exitedBeforeReady(child, deadline);
+      await Promise.race([new Promise(resolve => setTimeout(resolve, 100)), exited]);
     }
     const reason = lastError ? String(lastError.message ?? lastError) : "no response";
     const tail = this.#stdioTail.trim();
@@ -142,12 +159,37 @@ export class PipeCdpClient {
     );
   }
 
+  async #exitedBeforeReady(child, deadline) {
+    // stderr can still hold unread output when "exit" fires; drain it. Bounded:
+    // a surviving grandchild may hold the write end open indefinitely.
+    if (child.stderr) {
+      let timer;
+      await Promise.race([
+        finished(child.stderr).catch(() => {}),
+        new Promise(resolve => { timer = setTimeout(resolve, Math.max(0, Math.min(EXIT_STDERR_DRAIN_MS, deadline - Date.now()))); }),
+      ]);
+      clearTimeout(timer);
+    }
+    const how = child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`;
+    const firstLine = this.#stderrHead.split("\n").map(line => line.trim()).find(Boolean);
+    const tail = this.#stdioTail.trim();
+    return Error(
+      `Browser exited before it became ready over the CDP pipe (${how})` +
+      (firstLine ? `: ${firstLine}` : "") +
+      (tail && tail !== firstLine ? `\nBrowser stdio tail:\n${tail}` : ""),
+    );
+  }
+
   async send(method, params, sessionId, opts = {}) {
     if (method === "Target.createTarget" && opts.capability !== targetCreationCapability) throw Error("Target.createTarget is reserved for createAgentTabs");
     if (String(method).startsWith("OmO.")) {
       throw Error(`Extension commands are unavailable over pipe transport: ${method}`);
     }
     await this.ensureConnected();
+    return this.#dispatch(method, params, sessionId, opts);
+  }
+
+  async #dispatch(method, params, sessionId, opts = {}) {
     const id = this.#seq++;
     const msg = { id, method };
     if (params !== undefined) msg.params = params;
