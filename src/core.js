@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { pageBundle } from "./injected.js";
 import { queryOpenShadowAll } from "./open-shadow-query.js";
 import { isElementHiddenForAria } from "./aria-hidden.js";
+import { createTextMatching } from "./text-matching.js";
 import { snapshotResult } from "./snapshot-diff.js";
 import { subscribeConsoleEvents } from "./console-events.js";
 import { assertPageEvent, RUNTIME_PAGE_EVENTS, subscribePageErrors } from "./page-events.js";
@@ -914,7 +915,7 @@ async function waitForDomQuiet(xn,jn={}){let Vn=jn.budgetMs??QUIET_WINDOW_MS,qn=
           height,
         };
       }`,jn);if(!qn)throw Error(`locator.screenshot: element is not visible in the viewport`);let{path:Jn,quality:Yn,timeout:Zn,type:Qn=`webp`}=xn;return await this.#e.screenshot({path:Jn,quality:Yn,timeout:Zn,type:Qn,clip:qn})}async isChecked(){let xn=await this.#r();return await isCheckedElement(this.#e,xn)}async inputValue(){let xn=await this.#r();return await inputValueElement(this.#e,xn)}async innerHTML(){let xn=await this.#r();return await innerHTMLElement(this.#e,xn)}async innerText(){let xn=await this.#r();return await innerTextElement(this.#e,xn)}async textContent(){let xn=await this.#r();return await textContentElement(this.#e,xn)}async elementHandle(){return new ElementHandle(this.#e,await this.#r())}async count(){if(this.#composition)return(await this.#collect()).length;if(isRef(this.#t))try{return await this.#a(this.#t),1}catch(xn){if(xn instanceof RefStaleError)return 0;throw xn}if(isRoleSelector(this.#t)){let xn=NTH_SELECTOR_PATTERN.test(this.#t),{nth:jn,...Vn}=this.#p(this.#t),qn=await this.#d(),Jn=0;for(let{frameId:xn}of qn){let jn=this.#e.frameManager.getFrame(xn);jn?.isolatedContextId&&(Jn+=await this.#m(await this.#e.resolveSessionId(jn.sessionId),jn.isolatedContextId,Vn))}return xn?+(Jn>0&&(jn===`last`||jn<Jn)):Jn}let xn=NTH_SELECTOR_PATTERN.test(this.#t),jn=this.#f(this.#t),Vn=await this.#u();return await this.#e.evaluateInFrame(Vn,`function(query) {
-        const normalizeText = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+        const textMatching = (${createTextMatching.toString()})();
         const parseTextMatcher = (raw) => {
           if (!raw) return null;
           if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
@@ -933,15 +934,7 @@ async function waitForDomQuiet(xn,jn={}){let Vn=jn.budgetMs??QUIET_WINDOW_MS,qn=
           }
           return { contains: parseLiteral(raw) };
         };
-        const matchesText = (node, matcher) => {
-          const text = normalizeText(node.textContent);
-          if (matcher instanceof RegExp) {
-            matcher.lastIndex = 0;
-            return matcher.test(text);
-          }
-          if ('exact' in matcher) return text === matcher.exact;
-          return text.includes(matcher.contains);
-        };
+        const matchesText = textMatching.matchesText;
         // getByPlaceholder/AltText/Title/TestId match like Playwright: a RegExp tests the raw attribute value,
         // "..."s is the whole case-sensitive value and "..."i a case-insensitive substring.
         const parseAttributeMatcher = (raw) => {
@@ -1006,27 +999,13 @@ async function waitForDomQuiet(xn,jn={}){let Vn=jn.budgetMs??QUIET_WINDOW_MS,qn=
         const descendants = (root) => queryOpenShadowAll(root, '*');
         const textMatches = (root, matcher) => {
           const matches = descendants(root).filter((node) => matcher && matchesText(node, matcher));
-          return matches.filter((node) => !Array.from(node.children).some((child) => matchesText(child, matcher)));
+          return matches.filter((node) => !Array.from(node.children).some((child) => matchesText(child, matcher)) && !(node.shadowRoot && matchesText(node.shadowRoot, matcher)));
         };
         // Some sites duplicate the same visible label onto hidden or zero-sized inputs.
         // Prefer the actionable associated control so getByLabel() doesn't latch onto
         // an inert duplicate and fail later in the actionability pipeline.
         const labelMatches = (root, matcher) => {
-          const labels = queryOpenShadowAll(root, 'label')
-            .filter((label) => matcher && matchesText(label, matcher));
-          const controlSelector = 'input:not([type="hidden"]), textarea, select';
-          const seen = new Set();
-          const controls = [];
-          for (const label of labels) {
-            const explicitControl = label.control || (label.htmlFor ? label.getRootNode().getElementById(label.htmlFor) : null);
-            // Virginia DMV's Bootstrap form uses a label with no htmlFor, followed
-            // immediately by its input in the same row.
-            const siblingControl = label.nextElementSibling?.matches?.(controlSelector) ? label.nextElementSibling : null;
-            const control = explicitControl || siblingControl;
-            if (!control || seen.has(control)) continue;
-            seen.add(control);
-            controls.push(control);
-          }
+          const controls = descendants(root).filter((node) => matcher && textMatching.labels(node).some((label) => textMatching.matches(label, matcher)));
           controls.sort((a, b) => {
             const rank = (node) => {
               let score = 0;
@@ -1184,7 +1163,7 @@ async #merge(left,right,mode){
   return merged;
 }
 async all(){if(this.#composition)return Array.from({length:await this.count()},(_,index)=>this.nth(index));if(isRef(this.#t)||isRoleSelector(this.#t)||isTextSelector(this.#t)||parseBackendNodeSelector(this.#t))return[this];let xn=await this.#u(),jn=await this.#e.evaluateInFrame(xn,`function(selector) {
-        const normalizeText = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+        const textMatching = (${createTextMatching.toString()})();
         const parseTextMatcher = (raw) => {
           if (!raw) return null;
           if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
@@ -1203,15 +1182,7 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
           }
           return { contains: parseLiteral(raw) };
         };
-        const matchesText = (node, matcher) => {
-          const text = normalizeText(node.textContent);
-          if (matcher instanceof RegExp) {
-            matcher.lastIndex = 0;
-            return matcher.test(text);
-          }
-          if ('exact' in matcher) return text === matcher.exact;
-          return text.includes(matcher.contains);
-        };
+        const matchesText = textMatching.matchesText;
         // getByPlaceholder/AltText/Title/TestId match like Playwright: a RegExp tests the raw attribute value,
         // "..."s is the whole case-sensitive value and "..."i a case-insensitive substring.
         const parseAttributeMatcher = (raw) => {
@@ -1276,26 +1247,12 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
         const descendants = (root) => queryOpenShadowAll(root, '*');
         const textMatches = (root, matcher) => {
           const matches = descendants(root).filter((node) => matcher && matchesText(node, matcher));
-          return matches.filter((node) => !Array.from(node.children).some((child) => matchesText(child, matcher)));
+          return matches.filter((node) => !Array.from(node.children).some((child) => matchesText(child, matcher)) && !(node.shadowRoot && matchesText(node.shadowRoot, matcher)));
         };
         // Keep label-based locators resilient when one label name points at both
         // hidden template inputs and the visible live control.
         const labelMatches = (root, matcher) => {
-          const labels = queryOpenShadowAll(root, 'label')
-            .filter((label) => matcher && matchesText(label, matcher));
-          const controlSelector = 'input:not([type="hidden"]), textarea, select';
-          const seen = new Set();
-          const controls = [];
-          for (const label of labels) {
-            const explicitControl = label.control || (label.htmlFor ? label.getRootNode().getElementById(label.htmlFor) : null);
-            // Virginia DMV's Bootstrap form uses a label with no htmlFor, followed
-            // immediately by its input in the same row.
-            const siblingControl = label.nextElementSibling?.matches?.(controlSelector) ? label.nextElementSibling : null;
-            const control = explicitControl || siblingControl;
-            if (!control || seen.has(control)) continue;
-            seen.add(control);
-            controls.push(control);
-          }
+          const controls = descendants(root).filter((node) => matcher && textMatching.labels(node).some((label) => textMatching.matches(label, matcher)));
           controls.sort((a, b) => {
             const rank = (node) => {
               let score = 0;
@@ -1348,7 +1305,7 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
         };
         return queryAll(selector).length;
       }`,this.#t);return Array.from({length:jn},(xn,jn)=>this.nth(jn))}toString(){return`Locator@${this.#t}`}async#a(xn){if(this.#n)throw Error(`Snapshot refs already include frame identity; use page.locator(ref) instead of frame.locator(ref).`);let jn=xn.match(REF_PATTERN);if(!jn)throw Error(`Invalid ref format: ${xn}`);let Vn=jn[1]??``,qn=this.#e.frameManager.resolveFrameIdForSnapshotPrefix(Vn);if(!qn)throw new RefStaleError(xn);let Jn=Vn?3:1;for(let jn=0;jn<Jn;jn++){jn>0&&await new Promise(xn=>setTimeout(xn,50*jn));let Vn=this.#e.frameManager.getFrame(qn);if(!Vn||!Vn.isolatedContextId&&(await this.#e.frameManager.ensureInjected(qn),!Vn.isolatedContextId))throw new RefStaleError(xn);try{let{result:jn}=await this.#e.cdp.send(`Runtime.callFunctionOn`,{functionDeclaration:`function(refId) { return globalThis.__omowright?.deref(refId) ?? null; }`,arguments:[{value:xn}],executionContextId:Vn.isolatedContextId,returnByValue:!1,awaitPromise:!1,userGesture:!1},await this.#e.resolveSessionId(Vn.sessionId));if(jn.objectId)return{objectId:jn.objectId,frameId:qn,frameSessionId:Vn.sessionId,contextId:Vn.isolatedContextId}}catch{this.#e.frameManager.invalidateContext(qn)}}throw new RefStaleError(xn)}async#o(xn){let jn=this.#e.frameManager.getFrame(xn.frameId),Vn=await this.#e.frameManager.ensureInjected(xn.frameId);if(!jn||!Vn)throw Error(`File chooser element is no longer available`);let qn=await this.#e.resolveSessionId(jn.sessionId),{object:Jn}=await this.#e.cdp.send(`DOM.resolveNode`,{backendNodeId:xn.backendNodeId,executionContextId:Vn},qn);if(!Jn.objectId)throw Error(`File chooser element is no longer available`);return{objectId:Jn.objectId,frameId:xn.frameId,frameSessionId:jn.sessionId,contextId:Vn}}async#s(){let xn=await this.#u(),jn=this.#e.frameManager.getFrame(xn),Vn=await this.#e.frameManager.ensureInjected(xn);if(!jn||!Vn)throw Error(`${this.#n?.label()??`Main frame`} isolated world is not ready`);return{contextId:Vn,frameSessionId:jn.sessionId}}async#c(xn,scope,countOnly=!1){let jn=await this.#u(),Vn=this.#e.frameManager.getFrame(jn),qn=await this.#e.frameManager.ensureInjected(jn);if(!Vn||!qn)throw Error(`${this.#n?.label()??`Main frame`} isolated world is not ready`);const scopeRoots=scope?.filter(root=>root.contextId===qn&&root.frameSessionId===Vn.sessionId)??[];if(scope&&scopeRoots.length===0){if(countOnly)return 0;throw Error(`Selector "${xn}" not found`)}let Jn={...this.#f(xn),scoped:scope!==void 0,countOnly},{result:Yn}=await this.#e.cdp.send(`Runtime.callFunctionOn`,{functionDeclaration:`function(query, ...scopeRoots) {
-        const normalizeText = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+        const textMatching = (${createTextMatching.toString()})();
         const parseTextMatcher = (raw) => {
           if (!raw) return null;
           if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
@@ -1367,15 +1324,7 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
           }
           return { contains: parseLiteral(raw) };
         };
-        const matchesText = (node, matcher, useInnerText = false) => {
-          const text = normalizeText(useInnerText ? node.innerText : node.textContent);
-          if (matcher instanceof RegExp) {
-            matcher.lastIndex = 0;
-            return matcher.test(text);
-          }
-          if ('exact' in matcher) return text === matcher.exact;
-          return text.includes(matcher.contains);
-        };
+        const matchesText = textMatching.matchesText;
         // getByPlaceholder/AltText/Title/TestId match like Playwright: a RegExp tests the raw attribute value,
         // "..."s is the whole case-sensitive value and "..."i a case-insensitive substring.
         const parseAttributeMatcher = (raw) => {
@@ -1442,26 +1391,12 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
           const matches = descendants(root).filter((node) => matcher && matchesText(node, matcher));
           // Text selectors should resolve to the innermost visible text element,
           // not broad ancestors like <body>; click actionability depends on that.
-          return matches.filter((node) => !Array.from(node.children).some((child) => matchesText(child, matcher)));
+          return matches.filter((node) => !Array.from(node.children).some((child) => matchesText(child, matcher)) && !(node.shadowRoot && matchesText(node.shadowRoot, matcher)));
         };
         // Keep label selectors aligned with what a human can actually click when
         // pages duplicate label text across hidden template controls.
         const labelMatches = (root, matcher) => {
-          const labels = queryOpenShadowAll(root, 'label')
-            .filter((label) => matcher && matchesText(label, matcher));
-          const controlSelector = 'input:not([type="hidden"]), textarea, select';
-          const seen = new Set();
-          const controls = [];
-          for (const label of labels) {
-            const explicitControl = label.control || (label.htmlFor ? label.getRootNode().getElementById(label.htmlFor) : null);
-            // Virginia DMV's Bootstrap form uses a label with no htmlFor, followed
-            // immediately by its input in the same row.
-            const siblingControl = label.nextElementSibling?.matches?.(controlSelector) ? label.nextElementSibling : null;
-            const control = explicitControl || siblingControl;
-            if (!control || seen.has(control)) continue;
-            seen.add(control);
-            controls.push(control);
-          }
+          const controls = descendants(root).filter((node) => matcher && textMatching.labels(node).some((label) => textMatching.matches(label, matcher)));
           controls.sort((a, b) => {
             const rank = (node) => {
               let score = 0;
@@ -1543,46 +1478,11 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
                 return 'generic';
               };
 
-              const getAccessibleName = (node) => {
-                const ariaLabel = normalizeText(node.getAttribute?.('aria-label'));
-                if (ariaLabel) return ariaLabel;
-
-                const labelledBy = normalizeText(node.getAttribute?.('aria-labelledby'));
-                if (labelledBy) {
-                  const labelText = labelledBy
-                    .split(/\\s+/)
-                    .map((id) => normalizeText(node.getRootNode().getElementById?.(id)?.textContent))
-                    .filter(Boolean)
-                    .join(' ');
-                  if (labelText) return labelText;
-                }
-
-                if (typeof node.labels?.length === 'number' && node.labels.length > 0) {
-                  const labelText = Array.from(node.labels)
-                    .map((label) => normalizeText(label.textContent))
-                    .filter(Boolean)
-                    .join(' ');
-                  if (labelText) return labelText;
-                }
-
-                const title = normalizeText(node.getAttribute?.('title'));
-                if (title) return title;
-
-                const alt = normalizeText(node.getAttribute?.('alt'));
-                if (alt) return alt;
-
-                const placeholder = normalizeText(node.getAttribute?.('placeholder'));
-                if (placeholder) return placeholder;
-
-                const value = normalizeText(node.value);
-                if (value) return value;
-
-                return normalizeText(node.textContent).slice(0, 100);
-              };
-
               const isElementHiddenForAria = (${isElementHiddenForAria.toString()});
               const ariaHiddenCache = new Map();
               const isHidden = (node) => isElementHiddenForAria(node, ariaHiddenCache);
+          const textMatching = (${createTextMatching.toString()})(isHidden, getRole, query.includeHidden === true);
+          const getAccessibleName = textMatching.accessibleName;
 
               const getAriaBoolean = (value) => {
                 if (value === 'true') return true;
@@ -1643,7 +1543,7 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
                 if (query.name === undefined) {
                   return true;
                 }
-                return query.exact ? name === query.name : name.includes(query.name);
+                return textMatching.matches(name, query.exact ? { exact: query.name } : { contains: query.name });
               };
 
               const matchesState = (node) => {
@@ -1709,46 +1609,11 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
             return 'generic';
           };
 
-          const getAccessibleName = (node) => {
-            const ariaLabel = normalizeText(node.getAttribute?.('aria-label'));
-            if (ariaLabel) return ariaLabel;
-
-            const labelledBy = normalizeText(node.getAttribute?.('aria-labelledby'));
-            if (labelledBy) {
-              const labelText = labelledBy
-                .split(/\\s+/)
-                .map((id) => normalizeText(node.getRootNode().getElementById?.(id)?.textContent))
-                .filter(Boolean)
-                .join(' ');
-              if (labelText) return labelText;
-            }
-
-            if (typeof node.labels?.length === 'number' && node.labels.length > 0) {
-              const labelText = Array.from(node.labels)
-                .map((label) => normalizeText(label.textContent))
-                .filter(Boolean)
-                .join(' ');
-              if (labelText) return labelText;
-            }
-
-            const title = normalizeText(node.getAttribute?.('title'));
-            if (title) return title;
-
-            const alt = normalizeText(node.getAttribute?.('alt'));
-            if (alt) return alt;
-
-            const placeholder = normalizeText(node.getAttribute?.('placeholder'));
-            if (placeholder) return placeholder;
-
-            const value = normalizeText(node.value);
-            if (value) return value;
-
-            return normalizeText(node.textContent).slice(0, 100);
-          };
-
           const isElementHiddenForAria = (${isElementHiddenForAria.toString()});
           const ariaHiddenCache = new Map();
           const isHidden = (node) => isElementHiddenForAria(node, ariaHiddenCache);
+          const textMatching = (${createTextMatching.toString()})(isHidden, getRole, query.includeHidden === true);
+          const getAccessibleName = textMatching.accessibleName;
 
           const getAriaBoolean = (value) => {
             if (value === 'true') return true;
@@ -1809,7 +1674,7 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
             if (query.name === undefined) {
               return true;
             }
-            return query.exact ? name === query.name : name.includes(query.name);
+            return textMatching.matches(name, query.exact ? { exact: query.name } : { contains: query.name });
           };
 
           const matchesState = (node) => {
