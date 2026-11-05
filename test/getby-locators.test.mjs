@@ -163,3 +163,62 @@ test("getByPlaceholder/TestId/Title/AltText/Label match like Playwright on page,
     await cleanup();
   }
 });
+
+// getByRole (#171) skips what Playwright's isElementHiddenForAria hides: display:none (the `hidden` attribute's default
+// style included) or aria-hidden="true" on the element or any ancestor across shadow hosts, a computed visibility other
+// than visible, checkVisibility() false (closed <details>), and light-DOM children their shadow root does not slot.
+// `includeHidden: true` matches them all. Playwright's other getters have no such option and keep matching hidden elements.
+// [button id, hidden from the accessibility tree], in role traversal order: light DOM first, then open shadow roots.
+const ROLE_HIDDEN_CASES = [
+  ["visible", false],
+  ["display-none", true],
+  ["hidden-attribute", true],
+  ["hidden-overridden", false],
+  ["aria-hidden", true],
+  ["visibility-hidden", true],
+  ["visibility-restored", false],
+  ["closed-details", true],
+  ["unslotted", true],
+  ["list-hidden", true],
+  ["list-visible", false],
+  ["shadow-in-hidden-host", true],
+];
+
+const ROLE_HIDDEN_FIXTURE = `data:text/html,${encodeURIComponent(`<!DOCTYPE html><html><body>
+<button id="visible">Go</button>
+<div style="display: none"><button id="display-none">Go</button></div>
+<div hidden><button id="hidden-attribute">Go</button></div>
+<button id="hidden-overridden" hidden style="display: inline-block">Go</button>
+<div aria-hidden="true"><span><button id="aria-hidden">Go</button></span></div>
+<div style="visibility: hidden"><button id="visibility-hidden">Go</button><button id="visibility-restored" style="visibility: visible">Go</button></div>
+<details><summary>More</summary><button id="closed-details">Go</button></details>
+<div><template shadowrootmode="open"><p>No slot</p></template><button id="unslotted">Go</button></div>
+<div id="list"><span hidden><button id="list-hidden">Go</button></span><button id="list-visible">Go</button></div>
+<div style="display: none"><template shadowrootmode="open"><button id="shadow-in-hidden-host">Go</button></template></div>
+<p>Enough visible text for the readiness probe to accept this document.</p>
+</body></html>`)}`;
+
+test("getByRole skips elements hidden from the accessibility tree unless includeHidden is set", { skip: !SHELL && "no chromium binary found", timeout: 120000 }, async () => {
+  const { connection, cleanup } = await launch();
+  try {
+    const page = (await createAgentTabs(connection).create("about:blank")).page;
+    await page.goto(ROLE_HIDDEN_FIXTURE);
+    const all = ROLE_HIDDEN_CASES.map(([id]) => id);
+    const exposed = ROLE_HIDDEN_CASES.filter(([, hidden]) => !hidden).map(([id]) => id);
+    // count() and nth() run the two in-page role queries (counting and single-element resolution). idsOf() is not used:
+    // all() on a role locator yields the locator itself rather than one locator per match.
+    const roleIds = async (locator) => {
+      const ids = [];
+      for (let index = 0, count = await locator.count(); index < count; index++) ids.push(await locator.nth(index).getAttribute("id"));
+      return ids;
+    };
+
+    assert.deepEqual(await roleIds(page.getByRole("button", { name: "Go" })), exposed);
+    assert.deepEqual(await roleIds(page.getByRole("button", { name: "Go", includeHidden: true })), all);
+    assert.deepEqual(await roleIds(page.locator("#list").getByRole("button", { name: "Go" })), ["list-visible"]);
+    assert.deepEqual(await roleIds(page.locator("#list").getByRole("button", { name: "Go", includeHidden: true })), ["list-hidden", "list-visible"]);
+    assert.equal(await page.getByText("Go", { exact: true }).count(), all.length, "getByText has no includeHidden option and matches hidden elements");
+  } finally {
+    await cleanup();
+  }
+});
