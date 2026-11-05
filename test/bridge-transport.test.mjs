@@ -118,17 +118,23 @@ for (const name of ["tmp", "var", "etc"]) {
             throw Object.assign(new Error("unresolvable alias"), { code: scenario.split(" ")[1] });
           },
         };
+        const moduleUrl = ${JSON.stringify(new URL("../src/bridge-transport.js", import.meta.url).href)};
+        let bridge;
         if (process.versions.bun) {
           const { mock } = await import("bun:test");
           mock.module("node:fs/promises", () => mocks);
           mock.module("node:path", () => ({ ...path.posix, default: path.posix }));
+          bridge = await import(moduleUrl);
         } else {
+          // Load the module before switching to POSIX path semantics: on Windows the ESM loader
+          // resolves the drive-letter URL through node:path, which must stay win32 for that.
+          bridge = await import(moduleUrl);
           Object.assign(fs, mocks);
           Object.assign(path, path.posix);
           syncBuiltinESMExports();
         }
         Object.defineProperty(process, "platform", { value: "darwin" });
-        const { installNativeMessagingHost, BridgeProtocolError } = await import(${JSON.stringify(new URL("../src/bridge-transport.js", import.meta.url).href)});
+        const { installNativeMessagingHost, BridgeProtocolError } = bridge;
         await assert.rejects(
           () => installNativeMessagingHost({ hostPath: "/host", extensionId: "${extensionId}", nativeMessagingHostDir: component + "/hosts" }),
           error => error instanceof BridgeProtocolError && error.message.includes(component) &&
