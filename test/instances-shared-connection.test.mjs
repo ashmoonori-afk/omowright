@@ -369,6 +369,21 @@ const holderCases = [
     },
   },
   {
+    // #81 review: with no dialogPolicy passed, the connection's default policy
+    // is frozen too, so a holder can't change it for the others in place.
+    label: "the default dialog policy cannot be changed in place through a handle",
+    async run({ fake, connectAs }) {
+      const mutating = await connectAs();
+      const other = await connectAs();
+      assert.throws(() => {
+        mutating.cdp.dialogPolicy.accept = false;
+      }, TypeError);
+      assert.equal(other.cdp.dialogPolicy.accept, true);
+      assert.deepEqual(fake.upgrades, ["first"]);
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [true]);
+    },
+  },
+  {
     // #82: an unsubscribe also drops the handle's record of it, so a handle
     // that subscribes and unsubscribes N times tracks nothing afterwards. A
     // record left behind would run again on clearListeners() or close() and

@@ -108,7 +108,9 @@ loop; the module files next to it are implementation detail.
   transport listeners, and `handle.cdp.transportEvents.emit()` throws
   `TypeError`. The connection keeps a frozen copy of the options it was
   attached with, so mutating your options object after attaching changes
-  nothing. `setDialogPolicy(undefined)` resets to the default (accept every
+  nothing. `handle.cdp.dialogPolicy` on a shared connection is that frozen
+  copy (or a frozen default when you passed none), not your object, so it
+  can't be changed in place. `setDialogPolicy(undefined)` resets to the default (accept every
   dialog).
   `listInstances()` returns every record (`{ name, pid, endpoint,
   webSocketDebuggerUrl, profileDir, browserPath, startedAt }`) with `alive` /

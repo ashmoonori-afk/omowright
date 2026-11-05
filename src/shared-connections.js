@@ -221,6 +221,16 @@ function frozenCopy(value) {
   return Object.freeze(copy);
 }
 
+// The options a shared connection is opened with: the snapshot, plus a frozen
+// default dialog policy of its own when the caller passed none, so no holder
+// can change the live policy in place through handle.cdp.dialogPolicy (#81).
+// The snapshot itself stays the sharing key, so an attach that names no policy
+// still differs from one that asks for { accept: true }.
+function openingOptions(snapshot) {
+  if (snapshot?.dialogPolicy != null || snapshot?.client?.dialogPolicy != null) return snapshot;
+  return Object.freeze({ ...snapshot, dialogPolicy: Object.freeze({ accept: true }) });
+}
+
 // An authorizer is a credential: two callers never share one connection
 // through it, even with the same authorizer object (#79 review).
 export function canShareConnection(options) {
@@ -239,9 +249,9 @@ export async function acquireSharedConnection(
   if (!canShareConnection(options)) return open(options);
   const snapshot = frozenCopy(options);
   let entry = shared.get(webSocketDebuggerUrl);
-  if (entry && !isDeepStrictEqual(entry.options, snapshot)) return open(snapshot);
+  if (entry && !isDeepStrictEqual(entry.options, snapshot)) return open(openingOptions(snapshot));
   if (!entry) {
-    entry = { options: snapshot, refs: 0, ready: open(snapshot) };
+    entry = { options: snapshot, refs: 0, ready: open(openingOptions(snapshot)) };
     shared.set(webSocketDebuggerUrl, entry);
   }
   entry.refs += 1;
