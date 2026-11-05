@@ -10,6 +10,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   utimes,
@@ -703,6 +704,48 @@ test("a lock waiter looks a live holder's start time up once per acquire", async
       /timed out waiting for instance lock held by pid/,
     );
     assert.deepEqual(lookups, [process.pid]);
+  } finally {
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+// Safety contract (#174): a start time looked up for one holder is never
+// reused for the next. Holder A exits while a waiter waits, and process Q gets
+// A's pid and takes the lock; Q is alive, so the waiter must keep waiting. A
+// cache keyed by pid alone compares A's start with Q's and deletes Q's live
+// lock, leaving two holders. Test seam: the lookup is injected because no test
+// can make the OS hand a chosen pid to a new process.
+test("a lock waiter never reclaims a live lock taken by a holder that reused the previous holder's pid", async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  const lockPath = path.join(registryRoot, "pid-reuse.lock");
+  const lockText = (start, token) =>
+    `${JSON.stringify({ pid: process.pid, start, token, acquiredAt: new Date().toISOString() })}\n`;
+  const lookups = [];
+  let liveStart = "holder A start";
+  let ran = false;
+  try {
+    await writeFile(lockPath, lockText("holder A start", "holder-a"), { mode: 0o600 });
+    const startTimeOf = async (pid) => {
+      lookups.push(pid);
+      const start = liveStart;
+      if (lookups.length === 1) {
+        // A exits right after the waiter's lookup; Q reuses its pid and locks.
+        liveStart = "holder Q start";
+        const next = `${lockPath}.q.tmp`;
+        await writeFile(next, lockText("holder Q start", "holder-q"), { mode: 0o600 });
+        await rename(next, lockPath);
+      }
+      return start;
+    };
+    await assert.rejects(
+      withLock(lockPath, { timeoutMs: 1_000, staleGraceMs: 60_000, startTimeOf }, () => {
+        ran = true;
+      }),
+      /timed out waiting for instance lock held by pid/,
+    );
+    assert.equal(ran, false);
+    assert.equal(JSON.parse(await readFile(lockPath, "utf8")).token, "holder-q");
+    assert.deepEqual(lookups, [process.pid, process.pid]);
   } finally {
     await rm(registryRoot, { recursive: true, force: true });
   }
