@@ -91,6 +91,20 @@ running Chromium DevTools endpoint).
 - `page.screenshot(options?)` — image bytes (path, fullPage, clip, type, quality).
 - `page.pdf(options?)` — PDF bytes (path, format, margin, printBackground).
 - `page.keyboard` / `page.mouse` — press, type, insertText / move, click, wheel.
+- `page.on(event, listener)` / `page.off(event, listener)` /
+  `page.waitForEvent(event, { timeout?, predicate? })` — page events; `on`
+  returns an unsubscribe function. The accepted names are the exported
+  `PAGE_EVENT_NAMES`: `close`, `console`, `crash`, `dialog`,
+  `domcontentloaded`, `download`, `filechooser`, `frameattached`,
+  `framedetached`, `framenavigated`, `load`, `pageerror`, `popup`, `request`,
+  `response`. Any other name throws a `TypeError` that lists them.
+  `pageerror` receives an `Error` (page `name`, `message` and `stack`) for each
+  uncaught exception or unhandled rejection in the page or its frames. The
+  Runtime domain it needs is enabled only while a `pageerror` or `console`
+  listener exists (pages can detect it), and exceptions thrown before the
+  subscription are not replayed. `close` fires once the tab is gone, whether
+  `page.close()`, `window.close()`, the user or another client closed it; the
+  page is disposed with it.
 - `createCua(page)` — coordinate fallback (visual-browse equivalent): `click`,
   `doubleClick`, `drag({path})`, `move`, `scroll`, `type`, `keypress`,
   `getVisibleScreenshot()` (base64 PNG). Use only when refs/locators cannot
@@ -294,8 +308,8 @@ loop; the module files next to it are implementation detail.
   CSS selectors. Every new snapshot invalidates earlier ref ids. Attached-engine
   refs from `session.observe()` are `@eN` strings for `session.click("@e3")`;
   `bskSnapshot` refs are clicked through `css[ref]`.
-- `page.context()` and raw CDP `_sendToTarget` exist but are escape hatches;
-  prefer the tools above.
+- Raw CDP `page._sendToTarget(method, params)` exists but is an escape hatch;
+  prefer the tools above. There is no `page.context()`.
 
 ## Dialogs (alert / confirm / prompt / beforeunload)
 
