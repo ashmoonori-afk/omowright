@@ -130,6 +130,6 @@ export async function connect(cdpHttpUrl, options = {}) {
   // Opened on the resolved GUID URL, never the port: a reconnect then reaches
   // only this browser, and fails once it is gone (#79 review).
   return acquireSharedConnection(key, options, {
-    open: () => openConnection(key, options),
+    open: (snapshot) => openConnection(key, snapshot),
   });
 }
