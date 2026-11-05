@@ -3,8 +3,33 @@ const SNAPSHOT_PARSE_ERROR =
 
 export function compactSnapshot(snapshot) {
   const obj = typeof snapshot === "string" ? JSON.parse(snapshot) : snapshot;
+  if (obj?.full === false && obj.diff) {
+    const { added, changed, removed, focused } = obj.diff;
+    const lines = [
+      ...added.map(node => `+ ${node.tree}`),
+      ...changed.map(node => `~ ${node.tree}`),
+    ];
+    if (removed.length) lines.push(`- ${refRanges(removed)}`);
+    lines.push(`@focused ${focused ?? "none"}`);
+    return lines.join("\n");
+  }
   if (!obj || typeof obj.tree !== "string") throw new TypeError(SNAPSHOT_PARSE_ERROR);
   return obj.tree;
+}
+
+function refRanges(refs) {
+  const sorted = refs.map(ref => {
+    const [, prefix, number] = /^((?:f\d+)?e)(\d+)$/.exec(ref);
+    return { prefix, number: Number(number) };
+  }).sort((a, b) => a.prefix.localeCompare(b.prefix) || a.number - b.number);
+  const ranges = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const first = sorted[i];
+    let last = first;
+    while (sorted[i + 1]?.prefix === first.prefix && sorted[i + 1].number === last.number + 1) last = sorted[++i];
+    ranges.push(first === last ? `${first.prefix}${first.number}` : `${first.prefix}${first.number}-${last.prefix}${last.number}`);
+  }
+  return ranges.join(", ");
 }
 
 export function snapshotTokens(snapshot) {
@@ -30,7 +55,7 @@ export const toolSchemas = [
   },
   {
     name: "page.snapshot",
-    description: "PRIMARY page read. Returns a compact a11y tree; interactive elements carry [ref=eN] ids for page.locator. Options: maxDepth, maxChars, interactive, showHidden, selector, ref.",
+    description: "PRIMARY page read. Snapshot once, act on refs, then use {diff:true} for changes. Full fallbacks carry full:true and a reason. Options: diff, maxDepth, maxChars, interactive, showHidden, selector, ref.",
     parameters: { type: "object", properties: { options: { type: "object" } } },
   },
   {
@@ -55,7 +80,7 @@ export const toolSchemas = [
   },
   {
     name: "compactSnapshot",
-    description: "Pass page.snapshot() output through this before reading: returns the raw tree without the refs map (refs resolve in-page; the map is ~54% of bytes on real pages).",
+    description: "Compact page.snapshot() before reading: full results become raw trees; diffs use +/~ lines and removed ref ranges. Refs resolve in-page.",
     parameters: { type: "object", properties: { snapshot: {} }, required: ["snapshot"] },
   },
   {

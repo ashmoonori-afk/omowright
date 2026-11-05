@@ -144,6 +144,133 @@ window.rerender = () => {
   }
 });
 
+// Public snapshot contract: identities survive value/state and sibling changes; a renamed or
+// replaced element gets a new ref. This also exercises the allocator without changing recovery.
+test("snapshot refs survive fills and insertions but not identity changes", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-refs-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  try {
+    const page = await browser.newTab('data:text/html,<label>Name<input></label><button>Save</button>');
+    const before = await page.snapshot();
+    const refOf = (snapshot, name) => Object.entries(snapshot.refs).find(([, meta]) => meta.name === name)[0];
+    const name = refOf(before, "Name");
+    const save = refOf(before, "Save");
+    await page.locator(name).fill("Ada");
+    await page.evaluate("document.body.prepend(Object.assign(document.createElement('button'), {textContent:'Earlier'}))");
+    const after = await page.snapshot();
+    assert.equal(refOf(after, "Name"), name);
+    assert.equal(refOf(after, "Save"), save);
+    await page.evaluate("document.querySelector('button:last-of-type').textContent = 'Submit'");
+    const renamed = await page.snapshot();
+    assert.notEqual(refOf(renamed, "Submit"), save);
+    assert.ok(!renamed.refs[save]);
+    await page.locator(name).fill("Grace");
+    assert.equal(await page.evaluate("document.querySelector('input').value"), "Grace");
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+  }
+});
+
+// Protect the observable delta, baseline, navigation and byte-size contracts at the real page
+// boundary. Existing snapshots only assert full trees, so ignoring diff would otherwise pass.
+test("snapshot diffs describe form changes and reset on navigation", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const ud = mkdtempSync(path.join(tmpdir(), "omowright-diff-"));
+  const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
+  const html = `<main>
+<section role="region" aria-label="Notice" id="banner"><button>Dismiss</button></section>
+<form>${[
+    ["Full name", "Your first and last name"],
+    ["Email address", "Where to send your confirmation"],
+    ["Organization", "Your company or institution"],
+    ["Job title", "Your role at the organization"],
+    ["Phone number", "Include your country code"],
+    ["Street address", "Street and building number"],
+    ["City", "City or town"],
+    ["State or region", "State, province or region"],
+    ["Postal code", "Your local postal code"],
+    ["Country", "Your country of residence"],
+    ["Billing reference", "Purchase order or billing identifier"],
+    ["Special requests", "Dietary or accessibility requirements"],
+  ].map(([name, hint], i) => `<label>${name}<input name="field${i}" placeholder="${hint}"></label>`).join("")}
+<button type="button" onclick="document.getElementById('extra').hidden=false">More</button>
+<section id="extra" hidden><input aria-label="Extra details"></section></form></main>`;
+  const url = `data:text/html,${encodeURIComponent(html)}`;
+  try {
+    const page = await browser.newTab(url);
+    const first = await page.snapshot({ diff: true });
+    assert.equal(first.full, true);
+    assert.equal(first.reason, "no-baseline");
+    const refOf = (snapshot, name) => Object.entries(snapshot.refs).find(([, meta]) => meta.name === name)[0];
+    const fieldName = "Full name";
+    const field = refOf(first, fieldName);
+    const more = refOf(first, "More");
+    await page.locator(field).fill("Ada");
+    const filled = await page.snapshot({ diff: true });
+    assert.equal(filled.full, false);
+    assert.deepEqual(filled.diff.added, []);
+    assert.deepEqual(filled.diff.removed, []);
+    assert.deepEqual(filled.diff.changed.map(node => node.ref), [field]);
+    assert.ok(filled.diff.changed[0].tree.includes('"Ada"'));
+    assert.equal(filled.diff.focused, field);
+    await page.locator(more).click();
+    const opened = await page.snapshot({ diff: true });
+    assert.equal(opened.full, false, JSON.stringify(opened));
+    assert.equal(opened.diff.added.length, 1);
+    const extra = opened.diff.added[0].ref;
+    assert.match(opened.diff.added[0].tree, /Extra details/);
+    assert.ok(opened.diff.changed.some(node => node.ref === field));
+    assert.equal(opened.diff.focused, more);
+    const full = await page.snapshot({ diff: false });
+    assert.equal(refOf(full, fieldName), field);
+    assert.equal(refOf(full, "Extra details"), extra);
+    assert.deepEqual(await page.snapshot({ diff: true }), {
+      diff: { added: [], changed: [], removed: [], focused: more }, full: false,
+    });
+    const banner = refOf(full, "Notice");
+    const dismiss = refOf(full, "Dismiss");
+    await page.evaluate("document.getElementById('banner').remove()");
+    const removed = await page.snapshot({ diff: true });
+    assert.equal(removed.full, false);
+    assert.deepEqual(removed.diff.removed, [banner, dismiss]);
+    assert.deepEqual(removed.diff.added, []);
+    const other = await browser.newTab(url);
+    assert.equal((await other.snapshot({ diff: true })).reason, "no-baseline");
+    await page.goto(url);
+    const navigated = await page.snapshot({ diff: true });
+    assert.equal(navigated.full, true);
+    assert.equal(navigated.reason, "navigation");
+    await page.locator(refOf(navigated, "More")).click();
+    const stepBaseline = await page.snapshot();
+    await page.locator(refOf(navigated, fieldName)).fill("Ada");
+    await page.locator(refOf(navigated, "More")).click();
+    const step = await page.snapshot({ diff: true });
+    assert.equal(step.full, false);
+    const bytes = Buffer.byteLength(JSON.stringify(step));
+    const fullBytes = Buffer.byteLength(stepBaseline.tree);
+    assert.ok(bytes < fullBytes / 10, `diff=${bytes} full tree=${fullBytes}`);
+    console.info(`snapshot fill-and-click: diff=${bytes} full tree=${fullBytes}`);
+    await page.goto('data:text/html,<button>Go</button>');
+    await page.snapshot();
+    await page.evaluate("document.querySelector('button').disabled = true");
+    const larger = await page.snapshot({ diff: true });
+    assert.equal(larger.full, true);
+    assert.equal(larger.reason, "diff-larger-than-full");
+    assert.match(larger.tree, /\[disabled\]/);
+    assert.equal((await page.snapshot({ diff: true, interactive: true })).reason, "options-changed");
+    await page.goto('data:text/html,<h1>Before</h1><button>Go</button>');
+    await page.snapshot();
+    await page.evaluate("document.querySelector('h1').textContent = 'After'");
+    const text = await page.snapshot({ diff: true });
+    assert.equal(text.full, true);
+    assert.equal(text.reason, "unreferenced-content");
+    assert.match(text.tree, /After/);
+  } finally {
+    await browser.close();
+    removeTreeSync(ud);
+  }
+});
+
 test("JavaScript dialogs are auto-accepted and surfaced as events", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-dialog-test-"));
   const connection = await connectPipe({
