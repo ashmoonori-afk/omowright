@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { mkdir, open, readFile, rename, lstat, chmod } from "node:fs/promises";
+import { mkdir, open, readFile, readlink, realpath, rename, lstat, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { TextDecoder } from "node:util";
 import { createChromeApi as createStandaloneChromeApi } from "./chrome.js";
@@ -46,7 +46,31 @@ const NATIVE_HOST_DIRS = {
   linux: { chrome: [".config", "google-chrome"], chromium: [".config", "chromium"] },
 };
 export function defaultNativeMessagingHostDir(browser = "chrome", platform = process.platform) { if (platform === "win32") { if (!WIN32_REGISTRY_KEYS[browser]) throw new BridgeProtocolError("custom browser requires nativeMessagingHostDir"); return path.win32.join(process.env.LOCALAPPDATA || path.win32.join(homedir(), "AppData", "Local"), "omowright", "NativeMessagingHosts", browser); } const byBrowser = NATIVE_HOST_DIRS[platform]; if (!byBrowser) throw new BridgeProtocolError(`no default nativeMessagingHostDir on ${platform}; pass nativeMessagingHostDir`); const segments = byBrowser[browser]; if (!segments) throw new BridgeProtocolError("custom browser requires nativeMessagingHostDir"); return path.join(homedir(), ...segments, "NativeMessagingHosts"); }
-async function secureDirectory(dir) { const absolute = path.resolve(dir); const parts = absolute.split(path.sep).filter(Boolean); let current = path.parse(absolute).root; let final; for (const [index, part] of parts.entries()) { current = path.join(current, part); let info = await lstat(current).catch(() => null); if (!info) { await mkdir(current, { mode: 0o700 }); info = await lstat(current); } if (current !== "/var" && (info.isSymbolicLink() || !info.isDirectory())) throw new BridgeProtocolError("nativeMessagingHostDir security rejected"); if (current !== "/var" && info.uid !== process.getuid?.() && info.uid !== 0) throw new BridgeProtocolError("nativeMessagingHostDir ownership rejected"); const stickyRootAncestor = index < parts.length - 1 && info.uid === 0 && (info.mode & 0o1000) !== 0; if (current !== "/var" && !stickyRootAncestor && (info.mode & 0o022) !== 0) throw new BridgeProtocolError("nativeMessagingHostDir security rejected"); final = info; } if (!final || (final.uid !== process.getuid?.() && final.uid !== 0)) throw new BridgeProtocolError("nativeMessagingHostDir ownership rejected"); if ((final.mode & 0o077) !== 0) await chmod(absolute, 0o700); }
+async function secureDirectory(dir) {
+  const absolute = path.resolve(dir); const parts = absolute.split(path.sep).filter(Boolean);
+  let current = path.parse(absolute).root; let final;
+  while (parts.length) {
+    current = path.join(current, parts.shift());
+    let info = await lstat(current).catch(() => null);
+    if (!info) { await mkdir(current, { mode: 0o700 }); info = await lstat(current); }
+    if (info.isSymbolicLink()) {
+      if (process.platform !== "darwin" || !["/tmp", "/var", "/etc"].includes(current) || info.uid !== 0) throw new BridgeProtocolError(`nativeMessagingHostDir security rejected at ${current}: symlink is not a root-owned macOS system alias`);
+      const target = await readlink(current);
+      if (!(await realpath(current)).startsWith("/private/")) throw new BridgeProtocolError(`nativeMessagingHostDir security rejected at ${current}: system alias target is outside /private`);
+      // Walk the target from its root too: resolving the entire path would hide unsafe components.
+      parts.unshift(...target.split(path.sep).filter(Boolean));
+      current = path.isAbsolute(target) ? path.parse(target).root : path.dirname(current);
+      continue;
+    }
+    if (!info.isDirectory()) throw new BridgeProtocolError(`nativeMessagingHostDir security rejected at ${current}: not a directory`);
+    if (info.uid !== process.getuid?.() && info.uid !== 0) throw new BridgeProtocolError(`nativeMessagingHostDir ownership rejected at ${current}: not owned by the current user or root`);
+    const stickyRootAncestor = parts.length > 0 && info.uid === 0 && (info.mode & 0o1000) !== 0;
+    if (!stickyRootAncestor && (info.mode & 0o022) !== 0) throw new BridgeProtocolError(`nativeMessagingHostDir security rejected at ${current}: writable by others`);
+    final = info;
+  }
+  if (!final || (final.uid !== process.getuid?.() && final.uid !== 0)) throw new BridgeProtocolError(`nativeMessagingHostDir ownership rejected at ${current}: not owned by the current user or root`);
+  if ((final.mode & 0o077) !== 0) await chmod(absolute, 0o700);
+}
 async function secureExecutable(hostPath) { const info = await lstat(hostPath).catch(() => null); if (!info?.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o111) === 0 || (info.mode & 0o022) !== 0) throw new BridgeProtocolError("hostPath must be a securely owned executable file"); }
 export async function installNativeMessagingHost({ hostName = HOST_NAME, hostPath, extensionId, browser = "chrome", nativeMessagingHostDir, force = false, endpointPath, registryKey } = {}) { const win32 = process.platform === "win32"; if (endpointPath !== undefined) throw new BridgeProtocolError("endpointPath is not supported"); if (hostName !== HOST_NAME || !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(hostName)) throw new BridgeProtocolError("invalid hostName"); if (!path.isAbsolute(hostPath ?? "")) throw new BridgeProtocolError("hostPath must be absolute"); if (!win32) await secureExecutable(hostPath); if (!/^[a-p]{32}$/.test(extensionId ?? "")) throw new BridgeProtocolError("invalid extensionId"); if (!nativeMessagingHostDir && browser === "cloakbrowser") throw new BridgeProtocolError("CloakBrowser nativeMessagingHostDir must be explicit and verified"); if (registryKey !== undefined && !win32) throw new BridgeProtocolError("registryKey is only used on win32"); const dir = nativeMessagingHostDir ?? defaultNativeMessagingHostDir(browser);
   const manifest = { name: hostName, description: "OmOWright internal CloakBrowser native messaging bridge.", path: hostPath, type: "stdio", allowed_origins: [`chrome-extension://${extensionId}/`] };

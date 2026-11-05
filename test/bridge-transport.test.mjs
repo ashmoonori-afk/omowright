@@ -75,6 +75,17 @@ test("registration writes pinned manifest atomically and rejects unverified Cloa
   } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("registration follows the root-owned macOS /tmp alias", { ...registrationTimeout, skip: process.platform !== "darwin" }, async () => {
+  const root = mkdtempSync("/tmp/bridge-reg-alias-"); const executable = hostExecutable(root); const dir = path.join(root, "hosts");
+  try {
+    const result = await installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir });
+    assert.equal(result.path, path.join(dir, "com.omowright.cloakbridge.json"));
+    assert.deepEqual(JSON.parse(readFileSync(result.path)), result.manifest);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    assert.equal(statSync(result.path).mode & 0o777, 0o600);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("chrome API routes negotiated writes and preserves unsupported fallback", async () => {
   const calls = []; const bridge = { isConnected: true, capabilities: { commands: new Set(["bookmarks.create"]), events: new Set() }, request: async (...args) => { calls.push(args); return { id: "2", title: "x" }; } };
   const chrome = createChromeApi({}, { bridge }); assert.deepEqual(await chrome.bookmarks.create({ title: "x" }), { id: "2", title: "x" }); assert.deepEqual(calls[0], ["bookmarks.create", { details: { title: "x" }}]); await assert.rejects(() => chrome.history.deleteUrl({ url: "https://x.test/" }), /requires the extension bridge/);
@@ -159,10 +170,12 @@ test("registration rejects writable or symlinked directory components", registra
   const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-components-")); const executable = hostExecutable(root); const parent = path.join(root, "parent"); const dir = path.join(parent, "hosts"); mkdirSync(parent); const registry = testRegistry();
   try {
     if (win32) setEveryoneModify(parent, true); else chmodSync(parent, 0o777);
-    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options }), /security rejected/);
+    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options }), win32 ? /security rejected/ : error => error instanceof BridgeProtocolError && error.message.includes(parent) && /security rejected.*writable by others/.test(error.message));
     if (win32) setEveryoneModify(parent, false); else chmodSync(parent, 0o700);
-    const linked = path.join(root, "linked"); symlinkSync(parent, linked, win32 ? "junction" : undefined);
-    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linked, "hosts"), ...registry.options }), /security rejected/);
+    for (const name of ["linked", "tmp", "var", "etc"]) {
+      const linked = path.join(root, name); symlinkSync(parent, linked, win32 ? "junction" : undefined);
+      await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linked, "hosts"), ...registry.options }), win32 ? /security rejected/ : error => error instanceof BridgeProtocolError && error.message.includes(linked) && /security rejected.*symlink/.test(error.message));
+    }
     if (win32) {
       // Chrome starts the host in its own directory, so a directory others can add files to (DLLs, scripts) is refused;
       // the grant is AddFile/AddSubdirectory on the directory only, so the host file itself stays user-only
