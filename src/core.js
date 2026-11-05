@@ -749,6 +749,25 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
           if ('exact' in matcher) return text === matcher.exact;
           return text.includes(matcher.contains);
         };
+        // getByPlaceholder/AltText/Title/TestId match like Playwright: a RegExp tests the raw attribute value,
+        // "..."s is the whole case-sensitive value and "..."i a case-insensitive substring.
+        const parseAttributeMatcher = (raw) => {
+          if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
+            const lastSlash = raw.lastIndexOf('/');
+            return new RegExp(raw.slice(1, lastSlash), raw.slice(lastSlash + 1));
+          }
+          return { value: JSON.parse(raw.slice(0, -1)), exact: raw.endsWith('s') };
+        };
+        const matchesAttribute = (node, attribute) => {
+          const value = node.getAttribute(attribute.name);
+          if (value === null) return false;
+          const matcher = attribute.matcher;
+          if (matcher instanceof RegExp) {
+            matcher.lastIndex = 0;
+            return matcher.test(value);
+          }
+          return matcher.exact ? value === matcher.value : value.toLowerCase().includes(matcher.value.toLowerCase());
+        };
         const splitSteps = (value) => value.split(/\\s*>>\\s*/).map((step) => step.trim()).filter(Boolean);
         const parseStep = (rawStep) => {
           const nthMatch = rawStep.match(/^(.*):nth\\((\\d+|last)\\)$/s);
@@ -769,6 +788,16 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
             return {
               kind: 'label',
               matcher: parseTextMatcher(base.slice(15)),
+              hasText,
+              nth,
+            };
+          }
+          const attributeMatch = base.match(/^internal:attr=\\[([^=\\]]+)=(.*)\\]$/s);
+          if (attributeMatch) {
+            return {
+              kind: 'attribute',
+              selector: '[' + CSS.escape(attributeMatch[1]) + ']',
+              attribute: { name: attributeMatch[1], matcher: parseAttributeMatcher(attributeMatch[2]) },
               hasText,
               nth,
             };
@@ -831,7 +860,9 @@ function isWebSocketUrl(xn){return xn.startsWith(`ws://`)||xn.startsWith(`wss://
             const next = [];
             const seen = new Set();
             for (const root of roots) {
-              let matches = step.kind === 'text'
+              let matches = step.kind === 'attribute'
+                ? queryOpenShadowAll(root, step.selector).filter((node) => matchesAttribute(node, step.attribute))
+                : step.kind === 'text'
                 ? textMatches(root, step.matcher)
                 : step.kind === 'label'
                   ? labelMatches(root, step.matcher)
@@ -953,6 +984,25 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
           if ('exact' in matcher) return text === matcher.exact;
           return text.includes(matcher.contains);
         };
+        // getByPlaceholder/AltText/Title/TestId match like Playwright: a RegExp tests the raw attribute value,
+        // "..."s is the whole case-sensitive value and "..."i a case-insensitive substring.
+        const parseAttributeMatcher = (raw) => {
+          if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
+            const lastSlash = raw.lastIndexOf('/');
+            return new RegExp(raw.slice(1, lastSlash), raw.slice(lastSlash + 1));
+          }
+          return { value: JSON.parse(raw.slice(0, -1)), exact: raw.endsWith('s') };
+        };
+        const matchesAttribute = (node, attribute) => {
+          const value = node.getAttribute(attribute.name);
+          if (value === null) return false;
+          const matcher = attribute.matcher;
+          if (matcher instanceof RegExp) {
+            matcher.lastIndex = 0;
+            return matcher.test(value);
+          }
+          return matcher.exact ? value === matcher.value : value.toLowerCase().includes(matcher.value.toLowerCase());
+        };
         const splitSteps = (value) => value.split(/\\s*>>\\s*/).map((step) => step.trim()).filter(Boolean);
         const parseStep = (rawStep) => {
           const nthMatch = rawStep.match(/^(.*):nth\\((\\d+|last)\\)$/s);
@@ -973,6 +1023,16 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
             return {
               kind: 'label',
               matcher: parseTextMatcher(base.slice(15)),
+              hasText,
+              nth,
+            };
+          }
+          const attributeMatch = base.match(/^internal:attr=\\[([^=\\]]+)=(.*)\\]$/s);
+          if (attributeMatch) {
+            return {
+              kind: 'attribute',
+              selector: '[' + CSS.escape(attributeMatch[1]) + ']',
+              attribute: { name: attributeMatch[1], matcher: parseAttributeMatcher(attributeMatch[2]) },
               hasText,
               nth,
             };
@@ -1034,7 +1094,9 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
             const next = [];
             const seen = new Set();
             for (const root of roots) {
-              let matches = step.kind === 'text'
+              let matches = step.kind === 'attribute'
+                ? queryOpenShadowAll(root, step.selector).filter((node) => matchesAttribute(node, step.attribute))
+                : step.kind === 'text'
                 ? textMatches(root, step.matcher)
                 : step.kind === 'label'
                   ? labelMatches(root, step.matcher)
@@ -1083,6 +1145,25 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
           if ('exact' in matcher) return text === matcher.exact;
           return text.includes(matcher.contains);
         };
+        // getByPlaceholder/AltText/Title/TestId match like Playwright: a RegExp tests the raw attribute value,
+        // "..."s is the whole case-sensitive value and "..."i a case-insensitive substring.
+        const parseAttributeMatcher = (raw) => {
+          if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
+            const lastSlash = raw.lastIndexOf('/');
+            return new RegExp(raw.slice(1, lastSlash), raw.slice(lastSlash + 1));
+          }
+          return { value: JSON.parse(raw.slice(0, -1)), exact: raw.endsWith('s') };
+        };
+        const matchesAttribute = (node, attribute) => {
+          const value = node.getAttribute(attribute.name);
+          if (value === null) return false;
+          const matcher = attribute.matcher;
+          if (matcher instanceof RegExp) {
+            matcher.lastIndex = 0;
+            return matcher.test(value);
+          }
+          return matcher.exact ? value === matcher.value : value.toLowerCase().includes(matcher.value.toLowerCase());
+        };
         const splitSteps = (selector) => selector.split(/\\s*>>\\s*/).map((step) => step.trim()).filter(Boolean);
         const parseStep = (rawStep) => {
           const nthMatch = rawStep.match(/^(.*):nth\\((\\d+|last)\\)$/s);
@@ -1103,6 +1184,16 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
             return {
               kind: 'label',
               matcher: parseTextMatcher(base.slice(15)),
+              hasText,
+              nth,
+            };
+          }
+          const attributeMatch = base.match(/^internal:attr=\\[([^=\\]]+)=(.*)\\]$/s);
+          if (attributeMatch) {
+            return {
+              kind: 'attribute',
+              selector: '[' + CSS.escape(attributeMatch[1]) + ']',
+              attribute: { name: attributeMatch[1], matcher: parseAttributeMatcher(attributeMatch[2]) },
               hasText,
               nth,
             };
@@ -1166,7 +1257,9 @@ async all(){if(this.#composition)return Array.from({length:await this.count()},(
             const next = [];
             const seen = new Set();
             for (const root of roots) {
-              let matches = step.kind === 'text'
+              let matches = step.kind === 'attribute'
+                ? queryOpenShadowAll(root, step.selector).filter((node) => matchesAttribute(node, step.attribute))
+                : step.kind === 'text'
                 ? textMatches(root, step.matcher)
                 : step.kind === 'label'
                   ? labelMatches(root, step.matcher)
@@ -1550,6 +1643,34 @@ init_client$6();
 init_session_manager();
 init_frame_manager();
 init_page();
+// Playwright's attribute locators. Like getByText/getByLabel they only build a selector: the injected query resolves
+// `internal:attr=[name=value]` as a `[name]` query through open shadow roots, filtered by the value (parseAttributeMatcher).
+let testIdAttributeName = "data-testid";
+const selectors = {
+  // Playwright's selectors.setTestIdAttribute(): getByTestId() locators created afterwards match this attribute.
+  setTestIdAttribute(attributeName) {
+    if (typeof attributeName !== "string" || !/^[^\s"'>/=[\]]+$/.test(attributeName)) {
+      throw new TypeError(`selectors.setTestIdAttribute: invalid attribute name ${JSON.stringify(attributeName)}`);
+    }
+    testIdAttributeName = attributeName;
+  },
+};
+function attributeSelector(name, value, exact) {
+  // `>>` chains locator steps, so a value never carries it: `>` is written as an escape the matcher decodes.
+  if (Object.prototype.toString.call(value) === "[object RegExp]") return `internal:attr=[${name}=/${value.source.replaceAll(">>", ">\\x3e")}/${value.flags}]`;
+  return `internal:attr=[${name}=${JSON.stringify(String(value)).replaceAll(">", "\\u003e")}${exact ? "s" : "i"}]`;
+}
+class AttributeLocatorGetters {
+  getByAltText(text, options = {}) { return this.locator(attributeSelector("alt", text, options.exact)); }
+  getByPlaceholder(text, options = {}) { return this.locator(attributeSelector("placeholder", text, options.exact)); }
+  getByTestId(testId) { return this.locator(attributeSelector(testIdAttributeName, testId, true)); }
+  getByTitle(text, options = {}) { return this.locator(attributeSelector("title", text, options.exact)); }
+}
+for (const Container of [OmOPage, OmOFrame, FrameLocator]) {
+  for (const name of Object.getOwnPropertyNames(AttributeLocatorGetters.prototype)) {
+    if (name !== "constructor") Object.defineProperty(Container.prototype, name, Object.getOwnPropertyDescriptor(AttributeLocatorGetters.prototype, name));
+  }
+}
 
 OmOPage.prototype.route = function (url, handler, options) {
   return pageRoute(this, url, handler, options);
@@ -1575,4 +1696,5 @@ export {
   SessionManager,
   UnsupportedOperationError,
   takeSnapshot,
+  selectors,
 };
