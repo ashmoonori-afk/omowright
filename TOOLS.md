@@ -30,6 +30,13 @@ running Chromium DevTools endpoint).
   `commit`), timeout 30000ms (0 disables it).
 - `page.waitForTimeout(ms)` — discouraged: a fixed sleep. Wait for the state
   you need instead (`locator.waitFor`, `page.waitForURL`, `page.waitForLoadState`).
+- `page.waitForEvent("popup")` / `page.on("popup", listener)` — deliver the
+  newly opened page after attachment and interactivity. Subscribe before
+  `window.open(...)` or a `target="_blank"` click. The result supports `url()`,
+  `snapshot()`, `goto()`, and the other page methods. The old `{ url, windowName }`
+  event metadata is available as `popup.popupMetadata` (`url` is the originally
+  requested URL; `popup.url()` is the current URL). Popups are registered with
+  `createAgentTabs(connection)` and closed with its owned tabs or the connection.
 - `page.snapshot(options?)` — PRIMARY read. Returns `{tree, refs}`; tree lines
   look like `- link "Learn more" [ref=e1]`. Options: `maxDepth` (50),
   `maxChars`, `interactive`, `showHidden`, `selector`, `ref`.

@@ -7,6 +7,7 @@ import {
   SessionManager,
 } from "./core.js";
 import { acquireSharedConnection, canShareConnection } from "./shared-connections.js";
+import { createAgentTabs, getAgentTabs } from "./agent-tabs.js";
 
 export class TabRepository {
   #client;
@@ -19,12 +20,21 @@ export class BrowserConnection {
   #sessions;
   #pages = new Map();
   #storageRoot;
+  #popups = new Map();
+  #popupOff;
 
   constructor(client, options = {}) {
     this.#client = client;
     this.#sessions = new SessionManager(client);
     this.tabs = new TabRepository(client);
     this.#storageRoot = path.resolve(options.storageRoot ?? process.cwd());
+    this.#popupOff = client.on("Target.targetCreated", ({ targetInfo }) => {
+      if (targetInfo?.type !== "page") return;
+      const queue = this.#popups.get(targetInfo.openerId);
+      const pending = queue?.shift();
+      if (!queue?.length) this.#popups.delete(targetInfo.openerId);
+      if (pending) this.#attachPopup(targetInfo.targetId, pending).catch(pending.reject);
+    });
   }
 
   async initialize() {
@@ -44,8 +54,15 @@ export class BrowserConnection {
   async listTargets() { return this.tabs.listTargets(); }
 
   async newTab(url = "about:blank") {
-    const { createAgentTabs } = await import("./agent-tabs.js");
-    return (await createAgentTabs(this).create(url)).page;
+    return (await (getAgentTabs(this) ?? createAgentTabs(this)).create(url)).page;
+  }
+
+  async #attachPopup(targetId, pending) {
+    const tabs = getAgentTabs(this) ?? createAgentTabs(this);
+    const { page } = await tabs.adopt(targetId);
+    page.popupMetadata = Object.freeze(pending.metadata);
+    await page.waitForLoadState("interactive");
+    pending.resolve(page);
   }
 
   async attachPage(targetId) {
@@ -76,6 +93,14 @@ export class BrowserConnection {
       },
       registerReadableDownload: value => value,
       isReadableDownload: () => false,
+      resolvePopup: metadata => {
+        const queue = this.#popups.get(targetId) ?? [];
+        const promise = new Promise((resolve, reject) => queue.push({
+          resolve, reject, metadata: { url: metadata.url, windowName: metadata.windowName },
+        }));
+        this.#popups.set(targetId, queue);
+        return promise;
+      },
       openPopupTab: async () => { throw Error("Popup tab control requires the extension bridge"); },
       closeTab: async (_page, options = {}) => {
         if (options.runBeforeUnload) {
@@ -91,6 +116,12 @@ export class BrowserConnection {
   }
 
   async close() {
+    this.#popupOff();
+    for (const queue of this.#popups.values()) {
+      for (const pending of queue) pending.reject(Error("Browser connection closed"));
+    }
+    this.#popups.clear();
+    await getAgentTabs(this)?.dispose();
     for (const [targetId, entry] of [...this.#pages]) {
       await entry.page.dispose().catch(() => {});
       await entry.frames.dispose().catch(() => {});

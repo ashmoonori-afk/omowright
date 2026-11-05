@@ -312,8 +312,7 @@ test("captcha clicks checkbox, drags slider, and OCRs text region", { skip: !SHE
   }
 });
 
-// Public page API: clicking a target="_blank" link opens the new tab the way the browser does, so a QA script can attach
-// it from listTargets() (#56: the click threw "Popup tab control requires the extension bridge" on every transport).
+// Public popup API: both opening paths deliver an attached, usable, owned page.
 // Served over http: Chromium refuses a page-initiated top-level navigation to a data: URL.
 test("clicking a target=_blank link opens the linked page in a new tab", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const site = createServer((req, res) => {
@@ -328,13 +327,29 @@ test("clicking a target=_blank link opens the linked page in a new tab", { skip:
   try {
     const page = (await createAgentTabs(connection).create("about:blank")).page;
     await page.goto(`${origin}/`);
-    const opened = page.waitForEvent("popup", { timeout: 10000 });
-    await page.locator("#blank").click();
-    assert.equal((await opened).url, `${origin}/linked`, "the browser opened the linked URL");
-    const target = (await connection.listTargets()).find(t => t.url === `${origin}/linked`);
-    assert.ok(target, "the new tab is listed");
-    const tab = await connection.attachPage(target.id ?? target.targetId);
-    assert.equal(await tab.title(), "Linked page");
+    const tabs = createAgentTabs(connection);
+    for (const trigger of ["window.open", "target=_blank"]) {
+      let resolveListener;
+      const listened = new Promise(resolve => { resolveListener = resolve; });
+      const off = page.on("popup", resolveListener);
+      const opened = page.waitForEvent("popup", { timeout: 10000 });
+      if (trigger === "window.open") await page.evaluate(`window.open(${JSON.stringify(`${origin}/linked`)}, "qa-popup"); void 0`);
+      else await page.locator("#blank").click();
+      const popup = await opened;
+      off();
+      assert.equal(typeof popup.url, "function", `${trigger} delivers a page, not metadata`);
+      assert.equal(await listened, popup, "on and waitForEvent receive the same page");
+      assert.equal(popup.url(), `${origin}/linked`);
+      assert.deepEqual(popup.popupMetadata, { url: `${origin}/linked`, windowName: trigger === "window.open" ? "qa-popup" : "_blank" });
+      assert.match((await popup.snapshot()).tree, /the linked page body text/);
+      await popup.goto(`${origin}/`);
+      assert.equal(popup.url(), `${origin}/`);
+      assert.match((await popup.snapshot()).tree, /Open in a new tab/);
+      assert.equal(tabs.get(popup.targetId).page, popup, "popup belongs to the connection's manager");
+    }
+    await tabs.closeAll();
+    const remaining = await connection.listTargets();
+    assert.ok(!remaining.some(target => target.url.startsWith(origin)), "closing owned tabs closes the popups too");
   } finally {
     await cleanup();
     site.close();
