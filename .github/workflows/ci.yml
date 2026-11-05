@@ -35,6 +35,10 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
 
+      # The page-video test (test/integration.test.mjs) needs ffmpeg with libvpx; without it the test skips.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       # Ubuntu 24.04 runners restrict unprivileged user namespaces via AppArmor,
       # which makes Chromium's sandbox abort (SIGTRAP) at launch.
       - name: Allow unprivileged user namespaces for the Chromium sandbox
@@ -108,6 +112,10 @@ jobs:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
+
+      # The page-video test (test/integration.test.mjs) needs ffmpeg with libvpx; without it the test skips.
+      - name: Install ffmpeg
+        run: choco install ffmpeg --no-progress -y
 
       - name: Install chrome-headless-shell
         id: browser
