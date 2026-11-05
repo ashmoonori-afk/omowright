@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
-import { connectNamed, listInstances } from "../src/instances.js";
+import { connectNamed, listInstances, withEngineLock } from "../src/instances.js";
 import { readEvents } from "./fixtures/browser-lifecycle.mjs";
 import { reclaimLock, withLock } from "../src/instance-lock.js";
 import { assertOwnerOnly } from "./fixtures/owner-only.mjs";
@@ -646,6 +646,52 @@ test("connectNamed reclaims a lock whose pid now belongs to another process", { 
   } finally {
     await connection?.close().catch(() => {});
     await stopChild(unrelated.child);
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+// Cost contract (#104): a live holder's start time cannot change while a
+// waiter waits, and on Windows each lookup is a PowerShell call of about a
+// second, so one acquire looks each holder up once however many passes it
+// makes. Test seam: the lookup is injected to count it; the platform lookups
+// themselves are owned by the reclaim case above.
+test("a lock waiter looks a live holder's start time up once per acquire", async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  const lockPath = path.join(registryRoot, "held.lock");
+  const lookups = [];
+  try {
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({ pid: process.pid, start: "holder start", token: "live-holder", acquiredAt: new Date().toISOString() })}\n`,
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      withLock(
+        lockPath,
+        { timeoutMs: 1_000, staleGraceMs: 60_000, startTimeOf: async (pid) => { lookups.push(pid); return "holder start"; } },
+        () => assert.fail("the lock is held"),
+      ),
+      /timed out waiting for instance lock held by pid/,
+    );
+    assert.deepEqual(lookups, [process.pid]);
+  } finally {
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+// Cost contract (#104): the registry root carries an inheritable owner-only
+// grant, so a lock file created in it already admits only its owner and no
+// icacls runs per lock attempt. Proof on a real Windows host: the lock keeps
+// the inherited entries an icacls grant would have replaced.
+test("a lock file in the registry inherits the root's owner-only grant on Windows", { skip: process.platform !== "win32", timeout: 60_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  try {
+    await withEngineLock(registryRoot, registryRoot, async () => {
+      const locks = (await readdir(registryRoot)).filter((name) => name.endsWith(".lock"));
+      assert.equal(locks.length, 1);
+      await assertOwnerOnly([path.join(registryRoot, locks[0]), "inherited file"]);
+    });
+  } finally {
     await rm(registryRoot, { recursive: true, force: true });
   }
 });

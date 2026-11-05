@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import {
   chmodSync,
@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as omowright from "../src/index.js";
-import { restrictToOwner, windowsSystemTool } from "../src/owner-only.js";
+import { restrictNewFileToOwner, restrictToOwner, windowsSystemTool } from "../src/owner-only.js";
 import { assertOwnerOnly } from "./fixtures/owner-only.mjs";
 
 const fakePipeBrowser = fileURLToPath(
@@ -335,16 +335,21 @@ test("named cloak launch detects an unregistered holder on the legacy port", asy
 // is asserted by the cloak-profile and instances tests through Get-Acl.
 const SID = "S-1-5-21-1-2-3-1001";
 
-function spawner({ whoami = `"host\\me","${SID}"\r\n`, icacls } = {}) {
+// `sddl` is the DACL `icacls /save` reports for a directory, written as UTF-16
+// like the real tool writes it; the default is a fresh, inheriting directory.
+function spawner({ whoami = `"host\\me","${SID}"\r\n`, icacls, sddl = "D:AI(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)" } = {}) {
   const calls = [];
   const run = async (file, args) => {
     calls.push({ file, args });
     if (file.endsWith("whoami.exe")) return { stdout: whoami, stderr: "" };
     if (icacls) throw icacls;
+    if (args[1] === "/save") writeFileSync(args[2], `profile\r\n${sddl}\r\n`, "utf16le");
     return { stdout: "", stderr: "" };
   };
   return { calls, run };
 }
+
+const grants = (calls) => calls.filter(({ args }) => args.includes("/grant:r")).map(({ args }) => args[0]);
 
 test("windowsSystemTool resolves under SystemRoot, then windir, then C:\\Windows", () => {
   assert.equal(windowsSystemTool("icacls.exe", { SystemRoot: "D:\\Win" }), "D:\\Win\\System32\\icacls.exe");
@@ -358,13 +363,64 @@ test("restrictToOwner on win32 runs whoami and icacls by absolute path with an o
   await restrictToOwner("C:\\data\\profile\\seed.json", "file", { platform: "win32", run });
   for (const { file } of calls) assert.ok(path.win32.isAbsolute(file), `${file} is not an absolute path`);
   assert.deepEqual(
-    calls.filter(({ file }) => file === windowsSystemTool("icacls.exe")).map(({ args }) => args),
+    calls.filter(({ file, args }) => file === windowsSystemTool("icacls.exe") && args.includes("/grant:r")).map(({ args }) => args),
     [
       ["C:\\data\\profile", "/inheritance:r", "/grant:r", `*${SID}:(OI)(CI)F`, "/Q"],
       ["C:\\data\\profile\\seed.json", "/inheritance:r", "/grant:r", `*${SID}:F`, "/Q"],
     ],
   );
   assert.ok(calls.some(({ file }) => file === windowsSystemTool("whoami.exe")));
+});
+
+// Cost contract (#104): re-granting an inheritable DACL makes Windows rewrite
+// the inherited entries of every file below the directory, thousands on a used
+// Chromium profile. A directory that is already protected and grants the user
+// exactly what restrictToOwner would is read once and left alone; anything
+// else is granted as before. A file created inside a directory this process
+// restricted inherits that grant, so restrictNewFileToOwner runs no tool for it.
+test("restrictToOwner on win32 leaves an already owner-only directory alone, and new files in it inherit", async () => {
+  const cases = [
+    ["protected, user granted (OI)(CI)F", `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;${SID})`, []],
+    ["protected, the built-in Administrator account as LA", "D:PAI(A;OICI;FA;;;LA)", [], "S-1-5-21-1-2-3-500"],
+    ["still inheriting", `D:AI(A;OICI;FA;;;${SID})(A;OICIID;FA;;;BU)`, ["C:\\d"]],
+    ["protected, user grant without inheritance", `D:PAI(A;;FA;;;${SID})`, ["C:\\d"]],
+    ["protected, user granted twice", `D:PAI(A;OICI;FA;;;${SID})(A;;0x1200a9;;;${SID})`, ["C:\\d"]],
+    ["no ACL on the volume", "D:NO_ACCESS_CONTROL", ["C:\\d"]],
+  ];
+  for (const [label, sddl, expected, sid = SID] of cases) {
+    const { calls, run } = spawner({ sddl, whoami: `"host\\me","${sid}"\r\n` });
+    await restrictToOwner("C:\\d", "directory", { platform: "win32", run });
+    assert.deepEqual(grants(calls), expected, label);
+    assert.equal(calls.filter(({ args }) => args[1] === "/save").length, 1, label);
+  }
+
+  const { calls, run } = spawner();
+  await restrictToOwner("C:\\owned", "directory", { platform: "win32", run });
+  await restrictNewFileToOwner("C:\\owned\\a.lock.tmp", { platform: "win32", run });
+  await restrictNewFileToOwner("C:\\other\\a.lock.tmp", { platform: "win32", run });
+  assert.deepEqual(grants(calls), ["C:\\owned", "C:\\other\\a.lock.tmp"]);
+});
+
+// The same contract against the real icacls output on a Windows host.
+test("restrictToOwner on Windows re-reads an owner-only directory instead of re-granting it", { skip: process.platform !== "win32", timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "omowright-acl-"));
+  const calls = [];
+  const run = (file, args, options) => {
+    calls.push({ file, args });
+    return new Promise((resolve, reject) => {
+      execFile(file, args, options, (error, stdout, stderr) => (error ? reject(error) : resolve({ stdout, stderr })));
+    });
+  };
+  try {
+    await restrictToOwner(dir, "directory", { run });
+    assert.deepEqual(grants(calls), [dir]);
+    calls.length = 0;
+    await restrictToOwner(dir, "directory", { run });
+    assert.deepEqual(grants(calls), []);
+    await assertOwnerOnly([dir, "directory"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("restrictToOwner on win32 fails closed when a tool is missing, fails, or names no SID", async () => {
