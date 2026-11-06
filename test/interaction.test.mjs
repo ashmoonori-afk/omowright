@@ -493,7 +493,15 @@ test("interactive snapshot keeps controls, headings and capped feedback and drop
   // billed to the toast's own live budget, so the container's spent text budget does not drop it, and
   // the container's text is not folded into a name cut at 100 characters.
   const nestedToasts = `<div style="height:60px;overflow:auto"><p>${"pp ".repeat(400)}</p><div aria-live="assertive">Card declined</div></div><div onclick="void 0"><p>${"qq ".repeat(400)}</p><div aria-live="polite">Coupon applied</div></div>`;
-  const html = `<!doctype html><title>lean</title><main><h1>Orders</h1><p>${prose}</p><button>Pay now</button><a href="#details">Details</a>${liveRegions}${invalidLive}${messages}${nestedToasts}</main>`;
+  // A long label prints once, as a name cut at 100 characters, in both snapshot modes: a link or button
+  // named by its text, and a clickable container without a live region, must not repeat the text as an
+  // uncapped child.
+  const longLabels = [
+    ["long link", `<a href="#b">LINKHEAD ${"word ".repeat(400)}LINKTAIL</a>`, "LINKHEAD", "LINKTAIL"],
+    ["long button", `<button>BUTTONHEAD ${"press ".repeat(400)}BUTTONTAIL</button>`, "BUTTONHEAD", "BUTTONTAIL"],
+    ["clickable container without a live region", `<div onclick="void 0"><p>CARDHEAD ${"rr ".repeat(400)}CARDTAIL</p></div>`, "CARDHEAD", "CARDTAIL"],
+  ];
+  const html = `<!doctype html><title>lean</title><main><h1>Orders</h1><p>${prose}</p><button>Pay now</button><a href="#details">Details</a>${liveRegions}${invalidLive}${messages}${nestedToasts}${longLabels.map(([, markup]) => markup).join("")}</main>`;
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-lean-"));
   const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
   try {
@@ -520,6 +528,12 @@ test("interactive snapshot keeps controls, headings and capped feedback and drop
     assert.ok(full.includes(prose), "the default snapshot still carries body prose");
     assert.ok(full.includes("FEEDBACK_TAIL"), "the default snapshot still carries uncapped feedback");
     assert.ok(full.includes("Card declined") && full.includes("Coupon applied"), `the default snapshot keeps text past a container's first 100 characters:\n${full}`);
+    for (const [label, , head, tail] of longLabels) {
+      for (const [mode, tree] of [["default", full], ["interactive", interactive]]) {
+        assert.equal(tree.split(head).length - 1, 1, `${label} prints its label once in the ${mode} snapshot:\n${tree}`);
+        assert.ok(!tree.includes(tail), `${label} is capped in the ${mode} snapshot:\n${tree}`);
+      }
+    }
   } finally {
     await browser.close();
     removeTreeSync(ud);

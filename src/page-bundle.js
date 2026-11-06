@@ -945,6 +945,13 @@
 	function withoutWhitespace(text) {
 		return normalizeWhitespace(text).replace(/\s+/g, "");
 	}
+	// True when `element` is inside a live region or contains one.
+	function holdsLiveRegion(element) {
+		if (!element) return false;
+		if (getLiveRegionRoot(element)) return true;
+		for (const descendant of element.querySelectorAll("*")) if (getLiveRegionRoot(descendant) === descendant) return true;
+		return false;
+	}
 	function mergeTextLeafChildren(node) {
 		const textLeafRoles = /* @__PURE__ */ new Set([
 			"generic",
@@ -972,9 +979,10 @@
 			}
 			const merged = normalizeName(texts.join(" "));
 			if (!merged) return;
-			// A name is cut at 100 characters; keep longer text as children so none of it is lost.
-			if (merged.length < texts.join(" ").replace(/\s+/g, " ").trim().length) return;
 			if (!current.name) {
+				// A name is cut at 100 characters; when the text holds a live region (a toast in a scrollable
+				// or clickable node), keep it as children so the toast is not cut off.
+				if (merged.length < texts.join(" ").replace(/\s+/g, " ").trim().length && holdsLiveRegion(current.element)) return;
 				current.name = merged;
 				current.children = [];
 				return;
