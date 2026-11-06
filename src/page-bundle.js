@@ -172,6 +172,11 @@
 		}
 		return null;
 	}
+	// True when `ancestor` is `element` itself or one of its ancestors, across shadow boundaries.
+	function isSelfOrAncestor(ancestor, element) {
+		for (let current = element; current; current = getParentElementAcrossShadowBoundary(current)) if (current === ancestor) return true;
+		return false;
+	}
 	const INTERACTIVE_REF_ROLES = /* @__PURE__ */ new Set([
 		"button",
 		"link",
@@ -967,6 +972,8 @@
 			}
 			const merged = normalizeName(texts.join(" "));
 			if (!merged) return;
+			// A name is cut at 100 characters; keep longer text as children so none of it is lost.
+			if (merged.length < texts.join(" ").replace(/\s+/g, " ").trim().length) return;
 			if (!current.name) {
 				current.name = merged;
 				current.children = [];
@@ -1098,10 +1105,11 @@
 							// free-standing prose under landmarks and generics is dropped. A clickable or scrollable
 							// node caps its own text; live-region text is capped once per live-region root, whichever
 							// kept node it lands on, so two toasts in a row each keep their text and a log of many
-							// entries stays bounded.
+							// entries stays bounded. A live region nested inside the clickable or scrollable node (a
+							// toast in a scrollable app shell) uses its live-region budget, not the node's own.
 							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role)) {
-								const ownText = targetNode.interactiveControl || targetNode.scrollable;
-								const liveRoot = ownText ? null : getLiveRegionRoot(element);
+								const liveRoot = getLiveRegionRoot(element);
+								const ownText = (targetNode.interactiveControl || targetNode.scrollable) && !(liveRoot && !isSelfOrAncestor(liveRoot, targetNode.element));
 								if (!ownText && !liveRoot) continue;
 								const used = ownText ? targetNode.labelLength ?? 0 : liveTextLength.get(liveRoot) ?? 0;
 								const room = INTERACTIVE_LABEL_MAX - used;

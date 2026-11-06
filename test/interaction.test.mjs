@@ -489,7 +489,11 @@ test("interactive snapshot keeps controls, headings and capped feedback and drop
   // An invalid aria-live value counts as unset, so text inside it still belongs to the enclosing alert.
   const invalidLive = `<div role="alert"><div aria-live="rude">Payment failed</div></div><div role="alert"><span aria-live="true">Card expired</span></div>`;
   const messages = feedback.map(([role, text]) => `<div role="${role}">${text}</div><div role="${role}"><span>${"x".repeat(100)}</span><span>FEEDBACK_TAIL</span></div>`).join("");
-  const html = `<!doctype html><title>lean</title><main><h1>Orders</h1><p>${prose}</p><button>Pay now</button><a href="#details">Details</a>${liveRegions}${invalidLive}${messages}</main>`;
+  // A toast inside a scrollable or clickable container lands on that container's node, but its text is
+  // billed to the toast's own live budget, so the container's spent text budget does not drop it, and
+  // the container's text is not folded into a name cut at 100 characters.
+  const nestedToasts = `<div style="height:60px;overflow:auto"><p>${"pp ".repeat(400)}</p><div aria-live="assertive">Card declined</div></div><div onclick="void 0"><p>${"qq ".repeat(400)}</p><div aria-live="polite">Coupon applied</div></div>`;
+  const html = `<!doctype html><title>lean</title><main><h1>Orders</h1><p>${prose}</p><button>Pay now</button><a href="#details">Details</a>${liveRegions}${invalidLive}${messages}${nestedToasts}</main>`;
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-lean-"));
   const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
   try {
@@ -507,12 +511,15 @@ test("interactive snapshot keeps controls, headings and capped feedback and drop
     assert.ok(!interactive.includes(longToast.slice(0, 101)), `a role-less aria-live toast is capped at 100 characters:\n${interactive}`);
     assert.ok(interactive.includes("declined by the bank"), `a second role-less toast keeps its text after a long one:\n${interactive}`);
     assert.ok(!interactive.includes("Someone is typing"), `aria-live="off" text stays dropped:\n${interactive}`);
+    assert.ok(interactive.includes("Coupon applied"), `a toast inside a clickable container keeps its text:\n${interactive}`);
+    assert.ok(interactive.includes("Card declined"), `a toast inside a scrollable container keeps its text:\n${interactive}`);
     assert.ok(interactive.includes(`- alert: "Payment failed"`), `aria-live="rude" inside an alert keeps the alert text:\n${interactive}`);
     assert.ok(interactive.includes(`- alert: "Card expired"`), `aria-live="true" inside an alert keeps the alert text:\n${interactive}`);
     assert.ok(!interactive.includes(prose), `interactive snapshot should not carry body prose:\n${interactive}`);
     const full = compactSnapshot(await page.snapshot());
     assert.ok(full.includes(prose), "the default snapshot still carries body prose");
     assert.ok(full.includes("FEEDBACK_TAIL"), "the default snapshot still carries uncapped feedback");
+    assert.ok(full.includes("Card declined") && full.includes("Coupon applied"), `the default snapshot keeps text past a container's first 100 characters:\n${full}`);
   } finally {
     await browser.close();
     removeTreeSync(ud);
@@ -539,7 +546,9 @@ function keptTextUnder(tree, head) {
 test("interactive snapshot caps live-region text once per live-region root", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const entries = Array.from({ length: 10 }, (_, i) => `<article><p>Entry ${i}: ${"z".repeat(40)}</p></article>`).join("");
   const paragraph = (label) => `<p>${label} ${"p".repeat(150)}</p>`;
-  const html = `<!doctype html><title>live caps</title><main aria-live="polite"><h1>News</h1><article>${paragraph("First story")}</article><section aria-label="More">${paragraph("Second story")}</section><article>${paragraph("Third story")}</article></main><aside><div role="log" aria-label="Chat history">${entries}</div></aside>`;
+  // A scrollable log keeps up to 100 characters of its own text plus up to 100 for its kept items.
+  const scrollingLog = `<div role="log" aria-label="Build output" style="height:60px;overflow:auto">${Array.from({ length: 10 }, (_, i) => `<div>Line ${i}: ${"y".repeat(40)}</div><article><p>Note ${i}: ${"n".repeat(40)}</p></article>`).join("")}</div>`;
+  const html = `<!doctype html><title>live caps</title><main aria-live="polite"><h1>News</h1><article>${paragraph("First story")}</article><section aria-label="More">${paragraph("Second story")}</section><article>${paragraph("Third story")}</article></main><aside><div role="log" aria-label="Chat history">${entries}</div>${scrollingLog}</aside>`;
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-live-cap-"));
   const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
   try {
@@ -547,6 +556,8 @@ test("interactive snapshot caps live-region text once per live-region root", { s
     const interactive = compactSnapshot(await page.snapshot({ interactive: true }));
     assert.ok(interactive.includes("Entry 0:"), `the log keeps its first entry:\n${interactive}`);
     assert.ok(keptTextUnder(interactive, 'log "Chat history"') <= 100, `a log of ten entries keeps at most 100 characters:\n${interactive}`);
+    assert.ok(interactive.includes("Line 0:") && interactive.includes("Note 0:"), `a scrollable log keeps its own text and its items' text:\n${interactive}`);
+    assert.ok(keptTextUnder(interactive, 'log "Build output"') <= 200, `a scrollable log keeps at most 100 + 100 characters:\n${interactive}`);
     assert.ok(interactive.includes("First story"), `a live main keeps the start of its text:\n${interactive}`);
     assert.ok(keptTextUnder(interactive, "- main") <= 100, `a live main keeps at most 100 characters of prose:\n${interactive}`);
     const full = compactSnapshot(await page.snapshot());
