@@ -81,7 +81,10 @@ after each state change, never act on a stale ref. Start with
 missing or truncated. Interactive reads keep capped text for clickable nodes,
 scrollable containers and live regions: roles alert, alertdialog, status, log,
 timer and marquee, and any `aria-live="polite"` or `"assertive"` element such as
-a toast (`aria-live="off"` text is dropped). Scrollable containers
+a toast. Each live region keeps the first 100 characters of its text in total,
+however many items it holds, so two toasts each keep their own text and a long
+log keeps only its start (`aria-live="off"` text is dropped; an invalid
+`aria-live` value counts as unset). Scrollable containers
 can retain up to 100 characters of body prose; other free-standing body prose is
 omitted.
 

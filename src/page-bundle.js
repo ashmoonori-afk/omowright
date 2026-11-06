@@ -160,15 +160,17 @@
 		"timer",
 		"marquee"
 	]);
-	// Whether an element sits inside a live region. The nearest ancestor that sets aria-live or has a
-	// live role decides; an explicit aria-live wins on its own element, so aria-live="off" opts out.
-	function isInLiveRegion(element) {
+	// The live region an element sits in: the nearest ancestor (or the element itself) that sets
+	// aria-live polite/assertive or has a live role, or null outside one. An explicit aria-live wins on
+	// its own element, so aria-live="off" opts out; an invalid value counts as unset, as in ARIA.
+	function getLiveRegionRoot(element) {
 		for (let current = element; current; current = getParentElementAcrossShadowBoundary(current)) {
 			const live = (current.getAttribute("aria-live") || "").trim().toLowerCase();
-			if (live) return live === "polite" || live === "assertive";
-			if (LIVE_REGION_ROLES.has(getRole(current))) return true;
+			if (live === "polite" || live === "assertive") return current;
+			if (live === "off") return null;
+			if (LIVE_REGION_ROLES.has(getRole(current))) return current;
 		}
-		return false;
+		return null;
 	}
 	const INTERACTIVE_REF_ROLES = /* @__PURE__ */ new Set([
 		"button",
@@ -1058,6 +1060,8 @@
 				children: []
 			};
 			const visited = /* @__PURE__ */ new Set();
+			// Characters of live-region text an interactive read has kept so far, per live-region root.
+			const liveTextLength = /* @__PURE__ */ new Map();
 			function traverse(element, currentDepth, parentNode) {
 				if (currentDepth > options.maxDepth) return;
 				if (!element?.tagName) return;
@@ -1091,13 +1095,21 @@
 							// Interactive reads keep the text of a node that is itself clickable or scrollable, and
 							// text inside a live region (live roles or aria-live polite/assertive, such as toasts),
 							// capped like an accessible name so a card wrapping a whole article stays short;
-							// free-standing prose under landmarks and generics is dropped.
+							// free-standing prose under landmarks and generics is dropped. A clickable or scrollable
+							// node caps its own text; live-region text is capped once per live-region root, whichever
+							// kept node it lands on, so two toasts in a row each keep their text and a log of many
+							// entries stays bounded.
 							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role)) {
-								if (!targetNode.interactiveControl && !targetNode.scrollable && !isInLiveRegion(element)) continue;
-								const room = INTERACTIVE_LABEL_MAX - (targetNode.labelLength ?? 0);
+								const ownText = targetNode.interactiveControl || targetNode.scrollable;
+								const liveRoot = ownText ? null : getLiveRegionRoot(element);
+								if (!ownText && !liveRoot) continue;
+								const used = ownText ? targetNode.labelLength ?? 0 : liveTextLength.get(liveRoot) ?? 0;
+								const room = INTERACTIVE_LABEL_MAX - used;
 								if (room <= 0) continue;
 								const collapsed = child.nodeValue.replace(/\s+/g, " ");
-								targetNode.labelLength = (targetNode.labelLength ?? 0) + Math.min(collapsed.length, room);
+								const kept = used + Math.min(collapsed.length, room);
+								if (ownText) targetNode.labelLength = kept;
+								else liveTextLength.set(liveRoot, kept);
 								targetNode.children.push(collapsed.length > room ? collapsed.substring(0, room) : child.nodeValue);
 								continue;
 							}
