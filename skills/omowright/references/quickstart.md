@@ -78,8 +78,10 @@ Tree lines look like `- link "Learn more" [ref=e1]` — feed `e1` to
 `page.locator("e1")`. **EVERY NEW SNAPSHOT INVALIDATES EARLIER REFS**: re-snapshot
 after each state change, never act on a stale ref. Start with
 `interactive: true`; escalate to a full snapshot when a target or needed text is
-missing or truncated. Interactive reads keep capped text for alerts, statuses,
-alert dialogs, clickable nodes and scrollable containers. Scrollable containers
+missing or truncated. Interactive reads keep capped text for clickable nodes,
+scrollable containers and live regions: roles alert, alertdialog, status, log,
+timer and marquee, and any `aria-live="polite"` or `"assertive"` element such as
+a toast (`aria-live="off"` text is dropped). Scrollable containers
 can retain up to 100 characters of body prose; other free-standing body prose is
 omitted.
 

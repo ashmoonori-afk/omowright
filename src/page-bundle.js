@@ -151,12 +151,25 @@
 	]);
 	// Longest label an interactive read keeps for a clickable generic; matches normalizeName.
 	const INTERACTIVE_LABEL_MAX = 100;
-	// State feedback an interactive read keeps as capped text, like a control's label.
-	const FEEDBACK_TEXT_ROLES = /* @__PURE__ */ new Set([
+	// Roles that are live regions by default; their text is state feedback an interactive read keeps.
+	const LIVE_REGION_ROLES = /* @__PURE__ */ new Set([
 		"alert",
 		"alertdialog",
-		"status"
+		"status",
+		"log",
+		"timer",
+		"marquee"
 	]);
+	// Whether an element sits inside a live region. The nearest ancestor that sets aria-live or has a
+	// live role decides; an explicit aria-live wins on its own element, so aria-live="off" opts out.
+	function isInLiveRegion(element) {
+		for (let current = element; current; current = getParentElementAcrossShadowBoundary(current)) {
+			const live = (current.getAttribute("aria-live") || "").trim().toLowerCase();
+			if (live) return live === "polite" || live === "assertive";
+			if (LIVE_REGION_ROLES.has(getRole(current))) return true;
+		}
+		return false;
+	}
 	const INTERACTIVE_REF_ROLES = /* @__PURE__ */ new Set([
 		"button",
 		"link",
@@ -1075,12 +1088,12 @@
 					for (const child of getLightAndShadowChildNodes(element)) {
 						if (child.nodeType === Node.TEXT_NODE) {
 							if (!child.nodeValue || targetNode.role === "textbox") continue;
-							// Interactive reads keep the text of a node that is itself clickable, scrollable or
-							// state feedback (alert, status, alertdialog), whatever its children are, capped like an
-							// accessible name so a card wrapping a whole article stays short; free-standing prose
-							// under landmarks and generics is dropped.
+							// Interactive reads keep the text of a node that is itself clickable or scrollable, and
+							// text inside a live region (live roles or aria-live polite/assertive, such as toasts),
+							// capped like an accessible name so a card wrapping a whole article stays short;
+							// free-standing prose under landmarks and generics is dropped.
 							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role)) {
-								if (!targetNode.interactiveControl && !targetNode.scrollable && !FEEDBACK_TEXT_ROLES.has(targetNode.role)) continue;
+								if (!targetNode.interactiveControl && !targetNode.scrollable && !isInLiveRegion(element)) continue;
 								const room = INTERACTIVE_LABEL_MAX - (targetNode.labelLength ?? 0);
 								if (room <= 0) continue;
 								const collapsed = child.nodeValue.replace(/\s+/g, " ");

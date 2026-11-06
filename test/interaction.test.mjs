@@ -470,17 +470,22 @@ test("clicking a target=_blank link opens the linked page in a new tab", { skip:
   }
 });
 
-// Contract: interactive snapshots keep controls, headings and capped state feedback,
-// but leave out free-standing body prose; the default snapshot still carries the prose.
+// Contract: interactive snapshots keep controls, headings and capped state feedback from live
+// regions (live roles and aria-live polite/assertive), but leave out free-standing body prose and
+// aria-live="off" text; the default snapshot still carries the prose.
 test("interactive snapshot keeps controls, headings and capped feedback and drops body prose", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const prose = "This paragraph is long body copy that an agent only needs when it reads the article.";
   const feedback = [
     ["alert", "Invalid password, try again"],
     ["status", "Saved 2 minutes ago"],
     ["alertdialog", "Your session will expire soon"],
+    ["log", "Step 3 of 5 finished"],
   ];
+  // Role-less live regions put their text on the nearest kept node (here main). The off region
+  // comes first so it cannot be dropped only because main's cap is already used up.
+  const liveRegions = `<div aria-live="off">Someone is typing</div><div aria-live="polite">Order saved to drafts</div><div aria-live="assertive"><p>Card <span>declined by the bank</span></p></div>`;
   const messages = feedback.map(([role, text]) => `<div role="${role}">${text}</div><div role="${role}"><span>${"x".repeat(100)}</span><span>FEEDBACK_TAIL</span></div>`).join("");
-  const html = `<!doctype html><title>lean</title><main><h1>Orders</h1><p>${prose}</p><button>Pay now</button><a href="#details">Details</a>${messages}</main>`;
+  const html = `<!doctype html><title>lean</title><main><h1>Orders</h1><p>${prose}</p><button>Pay now</button><a href="#details">Details</a>${liveRegions}${messages}</main>`;
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-lean-"));
   const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
   try {
@@ -494,6 +499,9 @@ test("interactive snapshot keeps controls, headings and capped feedback and drop
       assert.ok(interactive.includes(`- ${role}: "${"x".repeat(100)}"`), `${role} keeps the first 100 characters:\n${interactive}`);
     }
     assert.ok(!interactive.includes("FEEDBACK_TAIL"), "feedback text is capped across nested text nodes");
+    assert.ok(interactive.includes("Order saved to drafts"), `a role-less aria-live toast keeps its text:\n${interactive}`);
+    assert.ok(interactive.includes("declined by the bank"), `text nested inside an aria-live container is kept:\n${interactive}`);
+    assert.ok(!interactive.includes("Someone is typing"), `aria-live="off" text stays dropped:\n${interactive}`);
     assert.ok(!interactive.includes(prose), `interactive snapshot should not carry body prose:\n${interactive}`);
     const full = compactSnapshot(await page.snapshot());
     assert.ok(full.includes(prose), "the default snapshot still carries body prose");
