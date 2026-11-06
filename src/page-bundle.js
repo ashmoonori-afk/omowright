@@ -945,14 +945,8 @@
 	function withoutWhitespace(text) {
 		return normalizeWhitespace(text).replace(/\s+/g, "");
 	}
-	// True when `element` is inside a live region or contains one.
-	function holdsLiveRegion(element) {
-		if (!element) return false;
-		if (getLiveRegionRoot(element)) return true;
-		for (const descendant of element.querySelectorAll("*")) if (getLiveRegionRoot(descendant) === descendant) return true;
-		return false;
-	}
-	function mergeTextLeafChildren(node) {
+	// `liveText` maps each live-region root to the text pieces the snapshot kept from inside it.
+	function mergeTextLeafChildren(node, liveText) {
 		const textLeafRoles = /* @__PURE__ */ new Set([
 			"generic",
 			"heading",
@@ -980,14 +974,26 @@
 			const merged = normalizeName(texts.join(" "));
 			if (!merged) return;
 			if (!current.name) {
-				// A name is cut at 100 characters; when the text holds a live region (a toast in a scrollable
-				// or clickable node), keep it as children so the toast is not cut off.
-				if (merged.length < texts.join(" ").replace(/\s+/g, " ").trim().length && holdsLiveRegion(current.element)) return;
 				current.name = merged;
-				current.children = [];
+				// The name is cut at 100 characters. When the cut drops the text of a live region nested inside
+				// this node (a toast in a scrollable or clickable container), that text stays as a child, capped
+				// once per live-region root; the container's own text keeps only the cut name.
+				const full = texts.join(" ");
+				current.children = merged.length < normalizeWhitespace(full).length && current.element && !getLiveRegionRoot(current.element) ? nestedLiveTexts(current.element, withoutWhitespace(full), withoutWhitespace(merged)) : [];
 				return;
 			}
 			if (withoutWhitespace(current.name) === withoutWhitespace(merged)) current.children = [];
+		};
+		// Capped text of the live regions inside `element` that appears in the node's text but not in its cut name.
+		const nestedLiveTexts = (element, fullText, nameText) => {
+			const kept = [];
+			for (const [root, pieces] of liveText) {
+				if (root === element || !isSelfOrAncestor(element, root)) continue;
+				const text = normalizeName(mergeStringBuffer(pieces));
+				const bare = withoutWhitespace(text);
+				if (bare && fullText.includes(bare) && !nameText.includes(bare)) kept.push(text);
+			}
+			return kept;
 		};
 		visit(node);
 	}
@@ -1077,6 +1083,12 @@
 			const visited = /* @__PURE__ */ new Set();
 			// Characters of live-region text an interactive read has kept so far, per live-region root.
 			const liveTextLength = /* @__PURE__ */ new Map();
+			// Text pieces kept from inside each live-region root, in either mode; see mergeTextLeafChildren.
+			const liveText = /* @__PURE__ */ new Map();
+			const keepLiveText = (root, text) => {
+				if (!liveText.has(root)) liveText.set(root, []);
+				liveText.get(root).push(text);
+			};
 			function traverse(element, currentDepth, parentNode) {
 				if (currentDepth > options.maxDepth) return;
 				if (!element?.tagName) return;
@@ -1126,9 +1138,15 @@
 								const kept = used + Math.min(collapsed.length, room);
 								if (ownText) targetNode.labelLength = kept;
 								else liveTextLength.set(liveRoot, kept);
-								targetNode.children.push(collapsed.length > room ? collapsed.substring(0, room) : child.nodeValue);
+								const piece = collapsed.length > room ? collapsed.substring(0, room) : child.nodeValue;
+								if (liveRoot) keepLiveText(liveRoot, piece);
+								targetNode.children.push(piece);
 								continue;
 							}
+							// Text of a wrapper below the kept node may sit in a nested live region; text on the kept
+							// node itself never does.
+							const liveRoot = element !== targetNode.element && getLiveRegionRoot(element);
+							if (liveRoot) keepLiveText(liveRoot, child.nodeValue);
 							targetNode.children.push(child.nodeValue);
 							continue;
 						}
@@ -1158,7 +1176,7 @@
 			} else if (document.body) traverse(document.body, 0, treeRoot);
 			normalizeStringChildren(treeRoot);
 			normalizeGenericRoles(treeRoot);
-			mergeTextLeafChildren(treeRoot);
+			mergeTextLeafChildren(treeRoot, liveText);
 			const duplicateRefs = findDuplicateRefIds(treeRoot);
 			if (duplicateRefs.length > 0) return {
 				error: `Snapshot produced duplicate refs: ${duplicateRefs.join(", ")}. Take a new snapshot and retry.`,

@@ -490,9 +490,9 @@ test("interactive snapshot keeps controls, headings and capped feedback and drop
   const invalidLive = `<div role="alert"><div aria-live="rude">Payment failed</div></div><div role="alert"><span aria-live="true">Card expired</span></div>`;
   const messages = feedback.map(([role, text]) => `<div role="${role}">${text}</div><div role="${role}"><span>${"x".repeat(100)}</span><span>FEEDBACK_TAIL</span></div>`).join("");
   // A toast inside a scrollable or clickable container lands on that container's node, but its text is
-  // billed to the toast's own live budget, so the container's spent text budget does not drop it, and
-  // the container's text is not folded into a name cut at 100 characters.
-  const nestedToasts = `<div style="height:60px;overflow:auto"><p>${"pp ".repeat(400)}</p><div aria-live="assertive">Card declined</div></div><div onclick="void 0"><p>${"qq ".repeat(400)}</p><div aria-live="polite">Coupon applied</div></div>`;
+  // billed to the toast's own live budget, so the container's spent text budget does not drop it. The
+  // container's own prose is not live: it stays a name cut at 100 characters, as without the toast.
+  const nestedToasts = `<div style="height:60px;overflow:auto"><p>${"pp ".repeat(400)}SCROLLPROSETAIL</p><div aria-live="assertive">Card declined</div></div><div onclick="void 0"><p>${"qq ".repeat(400)}CLICKPROSETAIL</p><div aria-live="polite">Coupon applied</div></div>`;
   // A long label prints once, as a name cut at 100 characters, in both snapshot modes: a link or button
   // named by its text, and a clickable container without a live region, must not repeat the text as an
   // uncapped child.
@@ -527,7 +527,12 @@ test("interactive snapshot keeps controls, headings and capped feedback and drop
     const full = compactSnapshot(await page.snapshot());
     assert.ok(full.includes(prose), "the default snapshot still carries body prose");
     assert.ok(full.includes("FEEDBACK_TAIL"), "the default snapshot still carries uncapped feedback");
-    assert.ok(full.includes("Card declined") && full.includes("Coupon applied"), `the default snapshot keeps text past a container's first 100 characters:\n${full}`);
+    assert.ok(full.includes("Card declined") && full.includes("Coupon applied"), `the default snapshot keeps a toast past a container's first 100 characters:\n${full}`);
+    for (const [mode, tree] of [["default", full], ["interactive", interactive]]) {
+      for (const tail of ["SCROLLPROSETAIL", "CLICKPROSETAIL"]) {
+        assert.ok(!tree.includes(tail), `a container holding a toast still caps its own prose in the ${mode} snapshot:\n${tree}`);
+      }
+    }
     for (const [label, , head, tail] of longLabels) {
       for (const [mode, tree] of [["default", full], ["interactive", interactive]]) {
         assert.equal(tree.split(head).length - 1, 1, `${label} prints its label once in the ${mode} snapshot:\n${tree}`);
