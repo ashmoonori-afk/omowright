@@ -198,11 +198,17 @@ test("clicking a target=_blank link opens the linked page in a new tab", { skip:
   }
 });
 
-// Contract: an interactive snapshot lists controls with their own labels and keeps headings for
-// orientation, but leaves out free-standing body prose; the default snapshot still carries the prose.
-test("interactive snapshot keeps controls and headings and drops body prose", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+// Contract: interactive snapshots keep controls, headings and capped state feedback,
+// but leave out free-standing body prose; the default snapshot still carries the prose.
+test("interactive snapshot keeps controls, headings and capped feedback and drops body prose", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
   const prose = "This paragraph is long body copy that an agent only needs when it reads the article.";
-  const html = `<!doctype html><title>lean</title><main><h1>Orders</h1><p>${prose}</p><button>Pay now</button><a href="#details">Details</a></main>`;
+  const feedback = [
+    ["alert", "Invalid password, try again"],
+    ["status", "Saved 2 minutes ago"],
+    ["alertdialog", "Your session will expire soon"],
+  ];
+  const messages = feedback.map(([role, text]) => `<div role="${role}">${text}</div><div role="${role}"><span>${"x".repeat(100)}</span><span>FEEDBACK_TAIL</span></div>`).join("");
+  const html = `<!doctype html><title>lean</title><main><h1>Orders</h1><p>${prose}</p><button>Pay now</button><a href="#details">Details</a>${messages}</main>`;
   const ud = mkdtempSync(path.join(tmpdir(), "omowright-lean-"));
   const browser = await connectPipe({ browserPath: SHELL, browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${ud}`], storageRoot: ud });
   try {
@@ -211,9 +217,15 @@ test("interactive snapshot keeps controls and headings and drops body prose", { 
     assert.match(interactive, /button "Pay now"/);
     assert.match(interactive, /link "Details"/);
     assert.match(interactive, /heading "Orders"/);
+    for (const [role, text] of feedback) {
+      assert.ok(interactive.includes(`- ${role}: "${text}"`), `${role} keeps its feedback text:\n${interactive}`);
+      assert.ok(interactive.includes(`- ${role}: "${"x".repeat(100)}"`), `${role} keeps the first 100 characters:\n${interactive}`);
+    }
+    assert.ok(!interactive.includes("FEEDBACK_TAIL"), "feedback text is capped across nested text nodes");
     assert.ok(!interactive.includes(prose), `interactive snapshot should not carry body prose:\n${interactive}`);
     const full = compactSnapshot(await page.snapshot());
     assert.ok(full.includes(prose), "the default snapshot still carries body prose");
+    assert.ok(full.includes("FEEDBACK_TAIL"), "the default snapshot still carries uncapped feedback");
   } finally {
     await browser.close();
     removeTreeSync(ud);

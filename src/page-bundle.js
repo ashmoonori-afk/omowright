@@ -151,6 +151,12 @@
 	]);
 	// Longest label an interactive read keeps for a clickable generic; matches normalizeName.
 	const INTERACTIVE_LABEL_MAX = 100;
+	// State feedback an interactive read keeps as capped text, like a control's label.
+	const FEEDBACK_TEXT_ROLES = /* @__PURE__ */ new Set([
+		"alert",
+		"alertdialog",
+		"status"
+	]);
 	const INTERACTIVE_REF_ROLES = /* @__PURE__ */ new Set([
 		"button",
 		"link",
@@ -691,16 +697,6 @@
 		}
 		return true;
 	}
-	function hasStrongInteractivity(element) {
-		const tag = element.tagName.toLowerCase();
-		if (INTERACTIVE_TAGS.has(tag)) return true;
-		if (element.hasAttribute("onclick")) return true;
-		const tabIndex = element.getAttribute("tabindex");
-		if (tabIndex !== null && tabIndex !== "-1") return true;
-		const role = getExplicitAriaRole(element);
-		if (role === "button" || role === "link") return true;
-		return element.getAttribute("contenteditable") === "true";
-	}
 	function getInteractivitySignals(element) {
 		const tag = element.tagName.toLowerCase();
 		const role = getExplicitAriaRole(element);
@@ -714,7 +710,7 @@
 		let hasPointerInteraction = hasCursorPointer;
 		if (hasCursorPointer && !hasOnClick && !hasTabIndex) {
 			const parent = element.parentElement;
-			if (parent && (window.getComputedStyle(parent).cursor === "pointer" || hasStrongInteractivity(parent))) hasPointerInteraction = false;
+			if (parent && window.getComputedStyle(parent).cursor === "pointer") hasPointerInteraction = false;
 		}
 		const hints = [];
 		if (hasPointerInteraction) hints.push("cursor:pointer");
@@ -1079,11 +1075,12 @@
 					for (const child of getLightAndShadowChildNodes(element)) {
 						if (child.nodeType === Node.TEXT_NODE) {
 							if (!child.nodeValue || targetNode.role === "textbox") continue;
-							// Interactive reads keep the label of a node that is itself clickable or scrollable,
-							// whatever its children are, capped like an accessible name so a card wrapping a whole
-							// article stays short; free-standing prose under landmarks and generics is dropped.
+							// Interactive reads keep the text of a node that is itself clickable, scrollable or
+							// state feedback (alert, status, alertdialog), whatever its children are, capped like an
+							// accessible name so a card wrapping a whole article stays short; free-standing prose
+							// under landmarks and generics is dropped.
 							if (options.interactive && targetNode.role !== "heading" && !INTERACTIVE_REF_ROLES.has(targetNode.role)) {
-								if (!targetNode.interactiveControl && !targetNode.scrollable) continue;
+								if (!targetNode.interactiveControl && !targetNode.scrollable && !FEEDBACK_TEXT_ROLES.has(targetNode.role)) continue;
 								const room = INTERACTIVE_LABEL_MAX - (targetNode.labelLength ?? 0);
 								if (room <= 0) continue;
 								const collapsed = child.nodeValue.replace(/\s+/g, " ");

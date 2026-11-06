@@ -141,6 +141,8 @@ test("interactive snapshots keep the label of a clickable or scrollable element 
       "Open menu": "#open-menu",
       "Span tile": "#span-tile",
       "Settings": "#settings-tile",
+      "Option alpha": "#option-alpha",
+      "Option beta": "#option-beta",
     };
     for (const [label, css] of Object.entries(owners)) {
       assert.match(snap.css[ownerRef(snap.tree, label)] ?? "", new RegExp(`${css}$`), `${label} is carried by the ref of ${css}:\n${snap.tree}`);

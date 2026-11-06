@@ -63,14 +63,18 @@ await page.close();
 ```js
 const snap = await page.snapshot();            // { tree, refs } or JSON string
 const tree = compactSnapshot(snap);            // raw tree, ~57% smaller
-await page.snapshot({ interactive: true });    // controls with their labels, headings, landmarks; no body prose
+await page.snapshot({ interactive: true });    // controls, headings, landmarks and state feedback
 await page.snapshot({ maxDepth: 20, maxChars: 4000, selector: "main" });
 ```
 
 Tree lines look like `- link "Learn more" [ref=e1]` — feed `e1` to
 `page.locator("e1")`. **EVERY NEW SNAPSHOT INVALIDATES EARLIER REFS**: re-snapshot
 after each state change, never act on a stale ref. Start with
-`interactive: true`; escalate to a full snapshot only when the target is missing.
+`interactive: true`; escalate to a full snapshot when a target or needed text is
+missing or truncated. Interactive reads keep capped text for alerts, statuses,
+alert dialogs, clickable nodes and scrollable containers. Scrollable containers
+can retain up to 100 characters of body prose; other free-standing body prose is
+omitted.
 
 ## Readiness and dialogs
 
