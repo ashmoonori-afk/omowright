@@ -34,12 +34,13 @@ test("buildSnapshotExpression embeds the page bundle under a shadowed globalThis
 async function withPage(fn) {
   assert.ok(SHELL, "no chrome-headless-shell found; set SHELL_BIN");
   const profile = mkdtempSync(path.join(tmpdir(), "omowright-bsk-snapshot-"));
-  const browser = await connectPipe({
-    browserPath: SHELL,
-    browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${profile}`],
-    storageRoot: profile,
-  });
+  let browser;
   try {
+    browser = await connectPipe({
+      browserPath: SHELL,
+      browserArgs: ["--headless", "--no-first-run", `--user-data-dir=${profile}`],
+      storageRoot: profile,
+    });
     const page = await browser.newTab(FIXTURE);
     const sessionId = await page.resolveSessionId();
     const mainWorldEvaluate = async (expression) => {
@@ -49,7 +50,7 @@ async function withPage(fn) {
     };
     await fn({ page, mainWorldEvaluate });
   } finally {
-    await browser.close();
+    await browser?.close();
     removeTreeSync(profile);
   }
 }

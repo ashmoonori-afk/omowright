@@ -1,10 +1,11 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startDaemonWithCli, windowsDaemonTaskName } from "../src/bsk/daemon-info.js";
+import { windowsSystemTool } from "../src/owner-only.js";
 
 // Platform contract: when bsk cannot detach its daemon from the caller's Job Object, the start
 // must still succeed through a scheduled task that opens no console window, whatever the home path holds.
@@ -15,11 +16,15 @@ const windowsOnly = { skip: process.platform !== "win32", timeout: 60_000 };
 const REFUSAL = "cannot start an independent Windows daemon; the host may prohibit Job Object breakaway";
 
 // A compiled stand-in for bsk: `status` refuses breakaway, `daemon start` records what the task gave it.
-const FAKE_BSK = `import { writeFileSync } from "node:fs";
+// The marker is written beside its final name and renamed into place, so a watcher that wakes on its
+// creation never reads it half-written.
+const FAKE_BSK = `import { renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 const args = process.argv.slice(2);
 if (args[0] === "status") { console.log(JSON.stringify({ message: ${JSON.stringify(REFUSAL)}, exit_code: 2 })); process.exit(2); }
-writeFileSync(path.join(process.env.BSK_HOME, "started.txt"), args.join(" "));
+const marker = path.join(process.env.BSK_HOME, "started.txt");
+writeFileSync(marker + ".tmp", args.join(" "));
+renameSync(marker + ".tmp", marker);
 `;
 
 let dir;
@@ -27,12 +32,29 @@ let bskBin;
 const registered = new Set();
 
 function powershell(command) {
-  return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8" }).trim();
+  return execFileSync(windowsSystemTool("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", command], { encoding: "utf8" }).trim();
 }
 
 function unregister(tasks) {
   if (tasks.length === 0) return;
   powershell(`${tasks.map((task) => `Unregister-ScheduledTask -TaskName '${task}' -Confirm:$false -ErrorAction SilentlyContinue`).join("; ")}; exit 0`);
+}
+
+async function waitForMarker(marker, timeoutMs) {
+  if (existsSync(marker)) return;
+  const watcher = watch(path.dirname(marker));
+  let timer;
+  try {
+    await new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`the scheduled task wrote no marker at ${marker} within ${timeoutMs / 1000} s`)), timeoutMs);
+      watcher.on("change", () => { if (existsSync(marker)) resolve(); });
+      watcher.on("error", reject);
+      if (existsSync(marker)) resolve();
+    });
+  } finally {
+    clearTimeout(timer);
+    watcher.close();
+  }
 }
 
 before(() => {
@@ -61,10 +83,9 @@ for (const name of ["Tom&Jerry (x) ^ ;", "100% %PATH% home", "O'Brien", "O\u2019
       await startDaemonWithCli({ home, bskBin });
       const [execute, args] = powershell(`$a = (Get-ScheduledTask -TaskName '${task}').Actions[0]; $a.Execute + '|' + $a.Arguments`).split("|");
       assert.match(execute, /\\conhost\.exe$/i);
-      assert.match(args, /^--headless powershell\.exe -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
+      assert.match(args, /^--headless "[A-Z]:\\[^"]*\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
       const marker = path.join(home, "started.txt");
-      const deadline = Date.now() + 15_000;
-      while (!existsSync(marker) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 200));
+      await waitForMarker(marker, 15_000);
       assert.equal(readFileSync(marker, "utf8"), "daemon start --foreground");
     } finally {
       unregister([task]);

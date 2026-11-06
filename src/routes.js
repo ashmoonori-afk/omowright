@@ -6,6 +6,8 @@
  * patterns tightly.
  */
 
+const controllers = new WeakMap();
+
 function globToRegExp(glob) {
   let source = "";
   for (const char of glob) {
@@ -84,6 +86,7 @@ function buildFulfill(requestId, { status = 200, headers = {}, contentType, body
 
 export function createRoutes(page) {
   if (!page?.cdp) throw new TypeError("createRoutes requires a page with cdp");
+  if (controllers.has(page)) return controllers.get(page);
 
   const entries = [];
   const warned = new WeakSet();
@@ -91,7 +94,8 @@ export function createRoutes(page) {
   let enabled = false;
   let sessionId;
   let unsubscribe = null;
-  let enablePromise = null;
+  let lifecycle = Promise.resolve();
+  let activeRequests = 0;
 
   function warnOnce(handler, error) {
     if (typeof handler === "function") {
@@ -102,17 +106,12 @@ export function createRoutes(page) {
     else console.warn("[routes] route handler did not settle the request; continuing");
   }
 
-  function findHandler(request) {
-    for (const entry of entries) {
-      if (matches(entry.match, request)) return entry.handler;
-    }
-    return undefined;
-  }
-
   async function handlePaused(params, meta) {
     if (!sessionId || meta?.sessionId !== sessionId) return;
     const requestId = params?.requestId;
     if (!requestId || settledIds.has(requestId)) return;
+    settledIds.add(requestId);
+    activeRequests += 1;
 
     const request = {
       url: params.request?.url ?? "",
@@ -130,33 +129,55 @@ export function createRoutes(page) {
       return page.cdp.send(method, cdpParams, sessionId);
     };
 
-    const route = {
-      request,
-      continue(overrides = {}) {
-        return settle("Fetch.continueRequest", buildContinue(requestId, overrides));
-      },
-      fulfill(options = {}) {
-        return settle("Fetch.fulfillRequest", buildFulfill(requestId, options));
-      },
-      abort(errorReason = "Failed") {
-        return settle("Fetch.failRequest", { requestId, errorReason });
-      },
-    };
-
-    const handler = findHandler(request);
-    if (!handler) {
-      await settle("Fetch.continueRequest", { requestId });
-      return;
+    const candidates = entries.slice();
+    let index = 0;
+    async function dispatch() {
+      while (index < candidates.length) {
+        const entry = candidates[index++];
+        if (!entries.includes(entry) || !matches(entry.match, request)) continue;
+        if (--entry.remaining === 0) entries.splice(entries.indexOf(entry), 1);
+        let acted = false;
+        let fallbackPromise;
+        const route = {
+          request,
+          continue(overrides = {}) {
+            acted = true;
+            return settle("Fetch.continueRequest", buildContinue(requestId, overrides));
+          },
+          fulfill(options = {}) {
+            acted = true;
+            return settle("Fetch.fulfillRequest", buildFulfill(requestId, options));
+          },
+          abort(errorReason = "Failed") {
+            acted = true;
+            return settle("Fetch.failRequest", { requestId, errorReason });
+          },
+          fallback() {
+            if (acted || settled) return Promise.resolve();
+            acted = true;
+            fallbackPromise = dispatch();
+            return fallbackPromise;
+          },
+        };
+        try {
+          await entry.handler(route);
+          await fallbackPromise;
+        } catch (error) {
+          warnOnce(entry.handler, error);
+        }
+        if (!acted && !settled) warnOnce(entry.handler);
+        break;
+      }
+      if (!settled) await settle("Fetch.continueRequest", { requestId });
     }
-
     try {
-      await handler(route);
+      await dispatch();
     } catch (error) {
-      warnOnce(handler, error);
-    }
-    if (!settled) {
-      warnOnce(handler);
-      await settle("Fetch.continueRequest", { requestId });
+      warnOnce(undefined, error);
+      if (!settled) await settle("Fetch.continueRequest", { requestId });
+    } finally {
+      activeRequests -= 1;
+      if (entries.length === 0 && activeRequests === 0) await syncFetch();
     }
   }
 
@@ -166,59 +187,63 @@ export function createRoutes(page) {
     });
   }
 
-  async function ensureEnabled() {
-    if (enabled) return;
-    if (!enablePromise) {
-      enablePromise = (async () => {
+  function syncFetch() {
+    const operation = lifecycle.then(async () => {
+      if (entries.length > 0) {
+        if (enabled) return;
         sessionId = await page.resolveSessionId();
         if (!unsubscribe) unsubscribe = page.cdp.on("Fetch.requestPaused", onPaused);
-        await page.cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId);
+        try {
+          await page.cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId);
+        } catch (error) {
+          unsubscribe();
+          unsubscribe = null;
+          throw error;
+        }
         enabled = true;
-      })();
-    }
+      } else if (enabled) {
+        await page.cdp.send("Fetch.disable", {}, sessionId);
+        enabled = false;
+        unsubscribe();
+        unsubscribe = null;
+        settledIds.clear();
+      }
+    });
+    lifecycle = operation.catch(() => {});
+    return operation;
+  }
+
+  async function route(match, handler, { times = Infinity, prepend = false } = {}) {
+    if (typeof handler !== "function") throw new TypeError("handler must be a function");
+    if (times !== Infinity && (!Number.isInteger(times) || times < 1)) throw new TypeError("times must be a positive integer");
+    const entry = { match, handler, remaining: times };
+    if (prepend) entries.unshift(entry);
+    else entries.push(entry);
     try {
-      await enablePromise;
+      await syncFetch();
     } catch (error) {
-      enablePromise = null;
+      const index = entries.indexOf(entry);
+      if (index !== -1) entries.splice(index, 1);
       throw error;
     }
   }
 
-  async function disableFetch() {
-    const pending = enablePromise;
-    enablePromise = null;
-    if (pending) await pending.catch(() => {});
-    if (unsubscribe) {
-      unsubscribe();
-      unsubscribe = null;
-    }
-    if (!enabled) return;
-    enabled = false;
-    await page.cdp.send("Fetch.disable", {}, sessionId);
-  }
-
-  async function route(match, handler) {
-    if (typeof handler !== "function") throw new TypeError("handler must be a function");
-    entries.push({ match, handler });
-    await ensureEnabled();
-  }
-
-  async function unroute(match) {
+  async function unroute(match, handler) {
     if (match === undefined) entries.length = 0;
     else {
       for (let index = entries.length - 1; index >= 0; index -= 1) {
-        if (sameMatch(entries[index].match, match)) entries.splice(index, 1);
+        if (sameMatch(entries[index].match, match) && (handler === undefined || entries[index].handler === handler)) entries.splice(index, 1);
       }
     }
-    if (entries.length === 0) await disableFetch();
+    await syncFetch();
   }
 
   async function dispose() {
     entries.length = 0;
-    await disableFetch();
+    await syncFetch();
   }
 
-  return {
+  const controller = {
     route,
     unroute,
     dispose,
@@ -226,4 +251,6 @@ export function createRoutes(page) {
       return enabled;
     },
   };
+  controllers.set(page, controller);
+  return controller;
 }

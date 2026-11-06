@@ -1,15 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { mkdtempSync, writeFileSync, readFileSync, statSync, rmSync, mkdirSync, symlinkSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, statSync, rmSync, mkdirSync, symlinkSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createNativeMessagingHost, encodeFrame, decodeFrames, installNativeMessagingHost, ExtensionHelloSchema, EventSchema, ResponseSchema, createChromeApi, BridgeProtocolError } from "../src/index.js";
 import { COMMAND_NAMES, EVENT_NAMES } from "../src/bridge-transport.js";
-import { isWin32RegistryKey, win32DirectoryChain, win32PathRisk } from "../src/native-host-win32.js";
+import { installWin32NativeHost, isWin32RegistryKey, win32DirectoryChain, win32PathRisk } from "../src/native-host-win32.js";
 import vm from "node:vm";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { windowsSystemTool } from "../src/owner-only.js";
 
 const extensionId = "a".repeat(32);
 const hello = { protocol: 1, type: "hello", role: "extension", connectionId: "c1", extensionId, extensionVersion: "0.1.0", events: ["tabs.activated"], commands: ["bookmarks.create"], maxMessageBytes: 1024 * 1024 };
@@ -18,10 +19,10 @@ const hello = { protocol: 1, type: "hello", role: "extension", connectionId: "c1
 const win32 = process.platform === "win32";
 const registrationTimeout = { timeout: 60_000 };
 function hostExecutable(dir, name = "host") { const file = path.join(dir, win32 ? `${name}.cmd` : name); writeFileSync(file, win32 ? "@echo off\r\n" : "#!/bin/sh\n", { mode: 0o755 }); return file; }
-function testRegistry() { if (!win32) return { options: {}, cleanup() {} }; const root = `HKCU\\Software\\omowright-test-${randomUUID()}`; return { options: { registryKey: `${root}\\NativeMessagingHosts` }, cleanup() { spawnSync("reg.exe", ["delete", root, "/f"], { windowsHide: true }); } }; }
-function registryDefault(key) { const out = spawnSync("reg.exe", ["query", key, "/ve"], { encoding: "utf8", windowsHide: true }); return /REG_SZ\s+(.+?)\s*$/m.exec(out.stdout ?? "")?.[1] ?? null; }
-function grantsSid(file, sid) { return spawnSync("icacls", [file, "/findsid", `*${sid}`], { encoding: "utf8", windowsHide: true }).stdout.includes("SID Found"); }
-function setEveryoneModify(dir, on, rights = "(OI)(CI)M") { const out = spawnSync("icacls", on ? [dir, "/grant", `*S-1-1-0:${rights}`] : [dir, "/remove:g", "*S-1-1-0"], { encoding: "utf8", windowsHide: true }); assert.equal(out.status, 0, out.stdout + out.stderr); }
+function testRegistry() { if (!win32) return { options: {}, cleanup() {} }; const root = `HKCU\\Software\\omowright-test-${randomUUID()}`; return { options: { registryKey: `${root}\\NativeMessagingHosts` }, cleanup() { spawnSync(windowsSystemTool("reg.exe"), ["delete", root, "/f"], { windowsHide: true }); } }; }
+function registryDefault(key) { const out = spawnSync(windowsSystemTool("reg.exe"), ["query", key, "/ve"], { encoding: "utf8", windowsHide: true }); return /REG_SZ\s+(.+?)\s*$/m.exec(out.stdout ?? "")?.[1] ?? null; }
+function grantsSid(file, sid) { return spawnSync(windowsSystemTool("icacls.exe"), [file, "/findsid", `*${sid}`], { encoding: "utf8", windowsHide: true }).stdout.includes("SID Found"); }
+function setEveryoneModify(dir, on, rights = "(OI)(CI)M") { const out = spawnSync(windowsSystemTool("icacls.exe"), on ? [dir, "/grant", `*S-1-1-0:${rights}`] : [dir, "/remove:g", "*S-1-1-0"], { encoding: "utf8", windowsHide: true }); assert.equal(out.status, 0, out.stdout + out.stderr); }
 function streams() { return { input: new PassThrough(), output: new PassThrough(), error: new PassThrough() }; }
 function readOne(stream) { return new Promise((resolve, reject) => { const chunks = []; const onData = chunk => { chunks.push(chunk); const parsed = decodeFrames(Buffer.concat(chunks)); if (parsed.frames.length) { stream.off("data", onData); resolve(parsed.frames[0]); } }; stream.on("data", onData); stream.once("error", reject); }); }
 
@@ -74,6 +75,78 @@ test("registration writes pinned manifest atomically and rejects unverified Cloa
   } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("registration follows the root-owned macOS /tmp alias", { ...registrationTimeout, skip: process.platform !== "darwin" }, async () => {
+  const root = mkdtempSync("/tmp/bridge-reg-alias-"); const executable = hostExecutable(root); const dir = path.join(root, "hosts");
+  try {
+    const result = await installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir });
+    assert.equal(result.path, path.join(dir, "com.omowright.cloakbridge.json"));
+    assert.deepEqual(JSON.parse(readFileSync(result.path)), result.manifest);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    assert.equal(statSync(result.path).mode & 0o777, 0o600);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Exercise the registration boundary with Darwin semantics on every runner, without changing system aliases.
+// Filesystem mocks only supply component metadata and syscall failures; the production walker decides trust.
+for (const name of ["tmp", "var", "etc"]) {
+  for (const scenario of ["basename lookalike", "readlink ENOENT", "realpath ENOENT", "realpath ELOOP"]) {
+    test(`registration under Darwin semantics rejects ${name}: ${scenario}`, () => {
+      const script = `
+        import assert from "node:assert/strict";
+        import fs from "node:fs/promises";
+        import path from "node:path";
+        import { syncBuiltinESMExports } from "node:module";
+        const component = ${JSON.stringify(scenario === "basename lookalike" ? `/some/dir/${name}` : `/${name}`)};
+        const scenario = ${JSON.stringify(scenario)};
+        const original = { ...fs };
+        const mocks = {
+          ...original,
+          async lstat(file) {
+            if (file === "/host") return { isFile: () => true, isSymbolicLink: () => false, uid: process.getuid?.(), mode: 0o700 };
+            if (file === component) return { isSymbolicLink: () => true, uid: 0 };
+            if (file === "/some" || file === "/some/dir") return { isSymbolicLink: () => false, isDirectory: () => true, uid: 0, mode: 0o755 };
+            return original.lstat(file);
+          },
+          async readlink(file) {
+            assert.equal(file, component);
+            if (scenario === "basename lookalike") assert.fail("basename lookalike reached alias resolution");
+            if (scenario === "readlink ENOENT") throw Object.assign(new Error("missing alias"), { code: "ENOENT" });
+            return "/private/${name}";
+          },
+          async realpath(file) {
+            assert.equal(file, component);
+            throw Object.assign(new Error("unresolvable alias"), { code: scenario.split(" ")[1] });
+          },
+        };
+        const moduleUrl = ${JSON.stringify(new URL("../src/bridge-transport.js", import.meta.url).href)};
+        let bridge;
+        if (process.versions.bun) {
+          const { mock } = await import("bun:test");
+          mock.module("node:fs/promises", () => mocks);
+          mock.module("node:path", () => ({ ...path.posix, default: path.posix }));
+          bridge = await import(moduleUrl);
+        } else {
+          // Load the module before switching to POSIX path semantics: on Windows the ESM loader
+          // resolves the drive-letter URL through node:path, which must stay win32 for that.
+          bridge = await import(moduleUrl);
+          Object.assign(fs, mocks);
+          Object.assign(path, path.posix);
+          syncBuiltinESMExports();
+        }
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        const { installNativeMessagingHost, BridgeProtocolError } = bridge;
+        await assert.rejects(
+          () => installNativeMessagingHost({ hostPath: "/host", extensionId: "${extensionId}", nativeMessagingHostDir: component + "/hosts" }),
+          error => error instanceof BridgeProtocolError && error.message.includes(component) &&
+            (scenario === "basename lookalike" ? /symlink/.test(error.message) : error.message.includes(scenario.split(" ")[1])),
+        );
+      `;
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 30_000 });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+    });
+  }
+}
+
 test("chrome API routes negotiated writes and preserves unsupported fallback", async () => {
   const calls = []; const bridge = { isConnected: true, capabilities: { commands: new Set(["bookmarks.create"]), events: new Set() }, request: async (...args) => { calls.push(args); return { id: "2", title: "x" }; } };
   const chrome = createChromeApi({}, { bridge }); assert.deepEqual(await chrome.bookmarks.create({ title: "x" }), { id: "2", title: "x" }); assert.deepEqual(calls[0], ["bookmarks.create", { details: { title: "x" }}]); await assert.rejects(() => chrome.history.deleteUrl({ url: "https://x.test/" }), /requires the extension bridge/);
@@ -99,10 +172,25 @@ test("registration rejects endpointPath, unsafe host names, and overwrites only 
     await installNativeMessagingHost(options); await assert.rejects(() => installNativeMessagingHost(options), /already exists/); await installNativeMessagingHost({ ...options, force: true });
     if (win32) {
       // the per-user registry value is only repointed at another manifest with force
-      const other = { ...options, nativeMessagingHostDir: path.join(root, "other-hosts") };
+      const other = { ...options, nativeMessagingHostDir: path.join(root, "other", "hosts") };
       await assert.rejects(() => installNativeMessagingHost(other), /already points at/);
+      // the refusal comes after this call created other\hosts, and it removes both directories it made
+      assert.equal(existsSync(path.join(root, "other")), false);
       const moved = await installNativeMessagingHost({ ...other, force: true }); assert.equal(registryDefault(moved.registryKey), moved.path);
     }
+  } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
+});
+
+// Platform contract: a failing install removes only what it created. Call A creates the new directory; a second install
+// into it registers before A writes, so A fails like the shared writer does and must leave the other's manifest alone.
+test("a failed win32 install never removes a concurrent install's manifest", { ...registrationTimeout, skip: !win32 }, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-race-")); const executable = hostExecutable(root); const dir = path.join(root, "new", "hosts"); const registry = testRegistry();
+  const options = { hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options };
+  try {
+    let winner;
+    const writeManifest = async file => { winner = await installNativeMessagingHost(options); if (existsSync(file)) throw new Error("registration manifest already exists; use force"); };
+    await assert.rejects(() => installWin32NativeHost({ hostName: "com.omowright.cloakbridge", hostPath: executable, dir, registryKey: registry.options.registryKey, force: false, writeManifest }), /already exists/);
+    assert.equal(registryDefault(winner.registryKey), winner.path); assert.equal(existsSync(winner.path), true, "the winner's registered manifest was removed");
   } finally { registry.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -143,10 +231,13 @@ test("registration rejects writable or symlinked directory components", registra
   const root = mkdtempSync(path.join(tmpdir(), "bridge-reg-components-")); const executable = hostExecutable(root); const parent = path.join(root, "parent"); const dir = path.join(parent, "hosts"); mkdirSync(parent); const registry = testRegistry();
   try {
     if (win32) setEveryoneModify(parent, true); else chmodSync(parent, 0o777);
-    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options }), /security rejected/);
+    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: dir, ...registry.options }), win32 ? /security rejected/ : error => error instanceof BridgeProtocolError && error.message.includes(parent) && /security rejected.*writable by others/.test(error.message));
     if (win32) setEveryoneModify(parent, false); else chmodSync(parent, 0o700);
-    const linked = path.join(root, "linked"); symlinkSync(parent, linked, win32 ? "junction" : undefined);
-    await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linked, "hosts"), ...registry.options }), /security rejected/);
+    // This real-filesystem case proves platform rejection off Darwin; the table above proves exact paths.
+    for (const name of ["linked", "tmp", "var", "etc"]) {
+      const linked = path.join(root, name); symlinkSync(parent, linked, win32 ? "junction" : undefined);
+      await assert.rejects(() => installNativeMessagingHost({ hostPath: executable, extensionId, nativeMessagingHostDir: path.join(linked, "hosts"), ...registry.options }), win32 ? /security rejected/ : error => error instanceof BridgeProtocolError && error.message.includes(linked) && /security rejected.*symlink/.test(error.message));
+    }
     if (win32) {
       // Chrome starts the host in its own directory, so a directory others can add files to (DLLs, scripts) is refused;
       // the grant is AddFile/AddSubdirectory on the directory only, so the host file itself stays user-only
@@ -245,7 +336,7 @@ test("request with an already-aborted signal rejects instead of hanging", async 
 });
 
 // Security contract: the Windows ACL policy that decides whether a native-messaging host may be registered. The real
-// registration (PowerShell + reg.exe) is exercised on Windows by test/bridge-transport.test.mjs; this table pins the
+// registration (PowerShell + reg.exe) is exercised on Windows by the registration tests above; this table pins the
 // policy on every OS so a loosened rights mask or trusted-SID set fails anywhere.
 const USER = "S-1-5-21-1-2-3-1001";
 const EVERYONE = "S-1-1-0";

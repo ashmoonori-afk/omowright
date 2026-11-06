@@ -12,7 +12,6 @@ import { connectNamed, listInstances, withEngineLock } from "./instances.js";
 import { restrictToOwner } from "./owner-only.js";
 import { connectPipe } from "./pipe.js";
 
-const LEGACY_CLOAK_PROBE_URL = "http://127.0.0.1:9242";
 const LEGACY_PROBE_TIMEOUT_MS = 1500;
 
 const MIN_FINGERPRINT_SEED = 10_000;
@@ -179,7 +178,7 @@ async function assertCloakLaunchClear({
   browserPath,
   profileDir,
   registryRoot,
-  legacyProbeUrl = LEGACY_CLOAK_PROBE_URL,
+  legacyProbeUrl,
   probeTimeoutMs,
 }) {
   const records = await listInstances({ registryRoot, probeTimeoutMs });
@@ -195,6 +194,9 @@ async function assertCloakLaunchClear({
     );
   }
 
+  // Nothing dials a local port its caller did not name (#80): the legacy
+  // probe runs only against an endpoint passed as legacyProbeUrl.
+  if (legacyProbeUrl === undefined) return;
   // A registered holder may legitimately answer on the legacy port; only an
   // unregistered engine there blocks a launch.
   const legacyHost = new URL(legacyProbeUrl).host;

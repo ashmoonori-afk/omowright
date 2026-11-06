@@ -1,3 +1,5 @@
+import { subscribeNetwork } from "./network-events.js";
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const JSON_MIME = /^application\/json\s*(;|$)|\+json\s*(;|$)/i;
 
@@ -50,38 +52,25 @@ export function createNetworkSnoop(page, options = {}) {
   const inflight = new Map();
   const buffer = [];
   const waiters = new Set();
-  const unsubscribers = [];
-  let sessionId = null;
+  const handlers = {};
   let disposed = false;
   let queue = Promise.resolve();
 
-  const ready = Promise.resolve(page.resolveSessionId()).then(id => { sessionId = id; });
-  ready.catch(error => console.warn("[network-snoop] failed to resolve the page session", error));
-
   function subscribe(method, handler) {
-    unsubscribers.push(page.cdp.on(method, (params, meta) => {
-      if (disposed) return;
-      if (sessionId === null) {
-        // The session id resolves asynchronously; queue early events in arrival order.
-        ready.then(() => { if (!disposed && meta?.sessionId === sessionId) handler(params); }).catch(() => {});
-        return;
-      }
-      if (meta?.sessionId !== sessionId) return;
-      handler(params);
-    }));
+    handlers[method] = handler;
   }
 
   function enqueue(task) {
     queue = queue.then(task).catch(error => console.warn("[network-snoop] entry processing failed", error));
   }
 
-  async function loadBody(entry) {
+  async function loadBody(entry, record) {
     if (entry.encodedDataLength > maxBodyBytes) {
       entry.bodySkipped = true;
       return;
     }
     try {
-      const result = await page.cdp.send("Network.getResponseBody", { requestId: entry.requestId }, sessionId);
+      const result = await record.rawBody();
       entry.body = result?.body ?? null;
       entry.base64Encoded = Boolean(result?.base64Encoded);
     } catch {
@@ -134,7 +123,7 @@ export function createNetworkSnoop(page, options = {}) {
     if (params.type) entry.resourceType = params.type;
   });
 
-  subscribe("Network.loadingFinished", params => {
+  subscribe("Network.loadingFinished", (params, record) => {
     const entry = inflight.get(params?.requestId);
     if (!entry) return;
     inflight.delete(entry.requestId);
@@ -142,7 +131,7 @@ export function createNetworkSnoop(page, options = {}) {
     entry.finishedAt = Date.now();
     enqueue(async () => {
       if (!wanted(entry)) return;
-      if (bodies) await loadBody(entry);
+      if (bodies) await loadBody(entry, record);
       commit(entry);
     });
   });
@@ -229,11 +218,12 @@ export function createNetworkSnoop(page, options = {}) {
   function dispose() {
     if (disposed) return;
     disposed = true;
-    for (const off of unsubscribers.splice(0, unsubscribers.length)) off();
+    unsubscribe();
     for (const waiter of [...waiters]) waiter.reject(Error("Network snoop disposed"));
     waiters.clear();
     inflight.clear();
   }
 
+  const unsubscribe = subscribeNetwork(page, handlers);
   return { pop, peek, popJson, waitFor, summary, dispose };
 }

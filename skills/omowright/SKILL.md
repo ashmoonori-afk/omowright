@@ -33,8 +33,20 @@ const browser = await connectPipe({
 const page = await browser.newTab("https://example.com");
 const tree = compactSnapshot(await page.snapshot());  // ALWAYS compact before reading
 await page.locator("e1").click();                     // refs come from the snapshot
+const changes = compactSnapshot(await page.snapshot({ diff: true }));
 await browser.close();                                // then rm -rf the profile dir
 ```
+
+Snapshot once, act on refs, then re-snapshot with `{ diff: true }` after each batch
+of actions. Unchanged elements keep their refs. Deltas have
+`{ full: false, diff: { added, changed, removed, focused } }`: added/changed entries
+contain `{ ref, tree }`, removed contains refs, and focused is a ref or `null`.
+Changed lines omit unchanged labels/placeholders; they show current state and value.
+`compactSnapshot` marks additions with `+`, changes with `~`, and removals as ref
+ranges. A full result has `full: true` and a `reason` (no baseline, navigation,
+changed snapshot options, unreferenced text changes, or a delta larger than the
+tree). Read it as the new baseline. Baselines belong to each page; `diff: false`
+returns the ordinary full snapshot and replaces its baseline.
 
 ## Default engine: CloakBrowser
 
@@ -71,7 +83,7 @@ A blocked page is a rung to climb, not a reason to stop and report.
 | 5. Read the browser log | Browser-level failure | The log names a cause outside the page |
 
 **TWO IDENTICAL FAILURES SELECT THE NEXT RUNG — A THIRD IDENTICAL ATTEMPT IS A
-DEFECT.** Verify after every page-changing action: fresh snapshot for DOM state,
+DEFECT.** Verify after every action batch: `snapshot({ diff: true })` for DOM state,
 fresh screenshot for visual state. Report a stop only when all rungs are
 exhausted, naming which rung failed with what evidence.
 
@@ -130,7 +142,9 @@ Preset and `TOOLS.md` paths are relative to the package root.
 - Dialogs never block: `alert/confirm/prompt/beforeunload` are answered by the
   dialog policy (default accept: `confirm() -> true`, `prompt() -> ""`). Change
   it with `connectPipe({ dialogPolicy })`, `connect(url, { dialogPolicy })` or `browser.setDialogPolicy()`;
-  observe with `page.on('dialog')`. Details in `TOOLS.md`.
+  observe with `page.on('dialog')`, or answer inline with
+  `page.on('dialog', d => d.accept(text))` (a listener's answer replaces the
+  policy). Details in `TOOLS.md`.
 - `goto` waits for meaningful content, not `readyState`: body plus (interactive
   elements OR landmarks OR >= 20 text chars). Near-empty pages time out — use
   `page.goto(url, { waitUntil: "commit" })` for those.

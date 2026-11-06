@@ -2,13 +2,183 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PipeCdpClient, connectPipe } from "../src/pipe.js";
+import { CdpCommandTimeoutError, CdpPipeClosedError, CdpSessionCrashedError, CdpSessionDetachedError, PipeCdpClient, connectPipe } from "../src/index.js";
 import { TERM_GRACE_MS, fixture, lifecycleClient, readEvents, scratchDir, spawnCaller, waitFor } from "./fixtures/browser-lifecycle.mjs";
 
 const harness = fileURLToPath(new URL("./fixtures/pipe-leak-harness.mjs", import.meta.url));
+const failureBrowser = fileURLToPath(new URL("./fixtures/pipe-failures-browser.mjs", import.meta.url));
+
+async function failureClient(t) {
+  const client = new PipeCdpClient({ browserPath: process.execPath, browserArgs: [failureBrowser], logId: "pipe-failure-test" });
+  t.after(async () => {
+    const child = client.childProcess;
+    if (child?.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit");
+      child.kill("SIGTERM");
+      await exited;
+    }
+    await client.close();
+  });
+  await client.ensureConnected();
+  return client;
+}
+
+// Held commands keep the default command timeout: each test's own bound ends a
+// hang, and a short per-command timeout fails a loaded host with a misleading
+// CdpCommandTimeoutError before the event under test arrives.
+async function holdCommand(client, sessionId, method = "Fixture.hold") {
+  const { promise, resolve } = Promise.withResolvers();
+  const off = client.on("Fixture.held", params => { if (params.sessionId === sessionId && params.method === method) resolve(); });
+  const outcome = client.send(method, undefined, sessionId)
+    .then(result => ({ result }), error => ({ error }));
+  try {
+    await Promise.race([promise, outcome.then(() => assert.fail("command settled before the child acknowledged it"))]);
+  } finally {
+    off();
+  }
+  return { outcome };
+}
+
+test("pipe timeout identifies its launch, session, target and absence of reply bytes", { timeout: 15_000 }, async t => {
+  const client = await failureClient(t);
+  const launches = new Set();
+  for (let run = 0; run < 2; run++) {
+    await client.ensureConnected();
+    const pid = client.childProcess.pid;
+    const { sessionId } = await client.send("Target.attachToTarget", { targetId: "target-a", flatten: true });
+    await assert.rejects(client.send("Fixture.silent", undefined, sessionId, { timeoutMs: 100 }), error => {
+      assert.ok(error instanceof CdpCommandTimeoutError);
+      assert.equal(error.name, "CdpCommandTimeoutError");
+      assert.equal(error.method, "Fixture.silent");
+      assert.equal(error.sessionId, sessionId);
+      assert.equal(error.targetId, "target-a");
+      assert.equal(error.launchId, `pipe-failure-test:${pid}`);
+      assert.ok(error.elapsedSinceLaunchMs >= error.commandElapsedMs);
+      assert.equal(error.receivedReplyBytes, false);
+      assert.equal(error.receivedBytesSinceSend, 0);
+      for (const key of ["launchId", "sessionId", "targetId", "elapsedSinceLaunchMs", "receivedReplyBytes"]) {
+        assert.ok(error.message.includes(`${key}=${error[key]}`), `timeout omits ${key}`);
+      }
+      assert.ok(error.message.includes("Fixture.silent"));
+      launches.add(error.launchId);
+      return true;
+    });
+    await client.close();
+  }
+  assert.equal(launches.size, 2);
+});
+
+test("pipe timeout distinguishes incoming traffic from an answered command", { timeout: 10_000 }, async t => {
+  const client = await failureClient(t);
+  await assert.rejects(client.send("Fixture.traffic", undefined, undefined, { timeoutMs: 100 }), error => {
+    assert.ok(error instanceof CdpCommandTimeoutError);
+    assert.equal(error.sessionId, null);
+    assert.equal(error.targetId, null);
+    assert.equal(error.receivedReplyBytes, true);
+    assert.ok(error.receivedBytesSinceSend > 0);
+    return true;
+  });
+});
+
+test("pipe timeout counts malformed complete frames without losing later valid replies", { timeout: 10_000 }, async t => {
+  const client = await failureClient(t);
+  await assert.rejects(client.send("Fixture.malformed", undefined, undefined, { timeoutMs: 100 }), error => {
+    assert.equal(error.malformedFrameCount, 1);
+    assert.ok(error.message.includes("malformedFrameCount=1"));
+    return true;
+  });
+  assert.equal((await client.send("Browser.getVersion")).product, "PipeFixture/1.0");
+});
+
+for (const event of ["end", "close"]) {
+  test(`pipe ${event} rejects pending commands while the child is still alive`, { timeout: 10_000 }, async t => {
+    const client = await failureClient(t);
+    const { outcome } = await holdCommand(client, "session-a");
+    let trigger;
+    if (event === "end") {
+      trigger = client.send("Fixture.end")
+        .then(result => ({ result }), error => ({ error }));
+    } else {
+      // Destroy the real parent fd: this emits close without a readable end.
+      client.childProcess.stdio[4].destroy();
+    }
+    const { error } = await outcome;
+    assert.ok(error instanceof CdpPipeClosedError, `expected CdpPipeClosedError, got ${error}`);
+    assert.equal(error.method, "Fixture.hold");
+    assert.equal(error.sessionId, "session-a");
+    assert.equal(client.childProcess.exitCode, null);
+    assert.equal(client.childProcess.signalCode, null);
+    if (trigger) assert.ok((await trigger).error instanceof CdpPipeClosedError);
+  });
+}
+
+// A helper process that inherited the CDP fd keeps the old launch's pipe open
+// after close(); its EOF must not fail the commands of the launch that replaced it.
+test("a previous launch's pipe EOF leaves the relaunched browser's pending commands alone", { timeout: 15_000 }, async t => {
+  const client = await failureClient(t);
+  const { pid: holderPid } = await client.send("Fixture.shareOutput");
+  t.after(() => { try { process.kill(holderPid, "SIGKILL"); } catch {} });
+  const oldPipe = client.childProcess.stdio[4];
+  const oldPipeClosed = once(oldPipe, "close");
+  await client.close();
+  assert.equal(oldPipe.readableEnded, false, "the helper should still hold the old pipe open");
+  await client.ensureConnected();
+  const { outcome } = await holdCommand(client, "session-a");
+  process.kill(holderPid, "SIGKILL");
+  await oldPipeClosed;
+  await client.send("Fixture.release", { sessionId: "session-a" });
+  assert.deepEqual(await outcome, { result: { released: true } });
+});
+
+for (const [action, ErrorType] of [["detach", CdpSessionDetachedError], ["crash", CdpSessionCrashedError]]) {
+  test(`pipe session ${action} rejects only that session's pending commands`, { timeout: 10_000 }, async t => {
+    const client = await failureClient(t);
+    const { sessionId } = await client.send("Target.attachToTarget", { targetId: "target-a", flatten: true });
+    const affected = await holdCommand(client, sessionId);
+    const other = await holdCommand(client, "session-b");
+    const browser = await holdCommand(client, undefined);
+    await client.send(`Fixture.${action}`, { sessionId });
+    await client.send("Fixture.release", { sessionId: "session-b" });
+    await client.send("Fixture.release", {});
+    const { error } = await affected.outcome;
+    assert.ok(error instanceof ErrorType, `expected ${ErrorType.name}, got ${error}`);
+    assert.equal(error.sessionId, sessionId);
+    assert.equal(error.targetId, "target-a");
+    assert.deepEqual(await other.outcome, { result: { released: true } });
+    assert.deepEqual(await browser.outcome, { result: { released: true } });
+  });
+}
+
+// Chromium keeps a page session through a renderer crash: Page.reload on it is
+// answered and brings the target back (Inspector.targetReloadedAfterCrash), so
+// the session keeps its target and a pending reload is left for Chromium to
+// answer. Commands the dead renderer held get only a late "Target crashed".
+test("a crashed pipe session keeps its target and lets a pending Page.reload finish", { timeout: 10_000 }, async t => {
+  const client = await failureClient(t);
+  const { sessionId } = await client.send("Target.attachToTarget", { targetId: "target-a", flatten: true });
+  const reload = await holdCommand(client, sessionId, "Page.reload");
+  const lost = await holdCommand(client, sessionId);
+  await client.send("Fixture.crash", { sessionId });
+  assert.ok((await lost.outcome).error instanceof CdpSessionCrashedError);
+  await assert.rejects(client.send("Fixture.silent", undefined, sessionId, { timeoutMs: 100 }), error => {
+    assert.ok(error instanceof CdpCommandTimeoutError);
+    assert.equal(error.targetId, "target-a");
+    return true;
+  });
+  await client.send("Fixture.release", { sessionId, method: "Page.reload" });
+  assert.deepEqual(await reload.outcome, { result: { released: true } });
+});
+
+// A frame without the fields the client reads must not throw out of the pipe's
+// data listener: that is an uncaught exception, and replies behind it stall.
+test("a malformed Target.attachedToTarget event leaves the pipe client working", { timeout: 10_000 }, async t => {
+  const client = await failureClient(t);
+  assert.deepEqual(await client.send("Fixture.attachMalformed"), {});
+});
 
 const ALLOCATOR_LINE =
   "Trying to load the allocator multiple times. This is *not* supported.";
@@ -70,6 +240,38 @@ test("connectPipe quits the browser it spawned when the browser never becomes re
       .catch(() => assert.fail("connectPipe rejected but left the browser it spawned running"));
   } finally {
     try { execFileSync("pkill", ["-KILL", "-f", "--", marker], { stdio: "ignore" }); } catch {}
+  }
+});
+
+// A browser that dies during the readiness check must fail the launch once with
+// its exit, not be relaunched by each readiness retry with a fresh budget (#123).
+// The error names the first stderr line once, even when the stdio tail still
+// holds it, and keeps naming it after more stderr than the tail holds.
+for (const frames of [1, 6_000]) test(`connectPipe rejects once, within the readiness budget, when the browser exits before ready (${frames} stack frame lines)`, { timeout: 20_000 }, async () => {
+  const dir = scratchDir();
+  const logPath = path.join(dir, "starts.log");
+  const readinessTimeoutMs = 5_000;
+  let budgetTimer;
+  const budget = new Promise((resolve) => { budgetTimer = setTimeout(() => resolve("budget expired"), readinessTimeoutMs); });
+  try {
+    const outcome = await Promise.race([
+      connectPipe({
+        browserPath: process.execPath,
+        browserArgs: [fixture],
+        spawnOptions: { env: { ...process.env, FAKE_BROWSER_MODE: "exit-early", FAKE_SIGNAL_LOG: logPath, FAKE_STDERR_FRAMES: String(frames) } },
+        readinessTimeoutMs,
+      }).then(() => "resolved", (error) => error),
+      budget,
+    ]);
+    assert.ok(outcome instanceof Error, `connectPipe did not reject within the readiness budget: ${outcome}`);
+    assert.match(outcome.message, /exited before it became ready/);
+    assert.match(outcome.message, /exit code 1/);
+    assert.equal(outcome.message.split("FATAL: fake browser cannot start").length - 1, 1, outcome.message.slice(0, 500));
+    assert.ok(outcome.message.endsWith(`#${frames - 1} fake browser frame`), "the stdio tail lost the last stderr line");
+    assert.equal(readEvents(logPath).filter(({ event }) => event === "START").length, 1);
+  } finally {
+    clearTimeout(budgetTimer);
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -163,4 +365,26 @@ test("a SIGKILL to the caller's process group leaves the browser to quit on pipe
     if (caller) try { process.kill(-caller.pid, "SIGKILL"); } catch {}
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// A missing browserPath fails the spawn with an "error" event and no "spawn".
+// Run the call in a child process: on a regression the unhandled error kills
+// the process that made the call, which would otherwise be this test runner.
+test("connectPipe with a missing browserPath rejects with the spawn error and keeps its caller alive", { timeout: 15_000 }, async t => {
+  const dir = scratchDir();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const missing = path.join(dir, "no-such-browser");
+  const script = `import { connectPipe } from ${JSON.stringify(new URL("../src/index.js", import.meta.url).href)};
+try { await connectPipe({ browserPath: ${JSON.stringify(missing)} }); console.log(JSON.stringify({ resolved: true })); }
+catch (error) { console.log(JSON.stringify({ code: error.code, message: error.message })); }`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+  const [code] = await once(child, "exit");
+  assert.equal(code, 0, `the caller died: ${stderr}`);
+  const outcome = JSON.parse(stdout.trim().split("\n").at(-1));
+  assert.equal(outcome.code, "ENOENT");
+  assert.ok(outcome.message.includes(missing), outcome.message);
 });

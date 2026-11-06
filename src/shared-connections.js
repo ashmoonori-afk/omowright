@@ -67,7 +67,11 @@ function refuse(what) {
 function lease(key, entry, connection) {
   let closed;
   const overlay = Object.create(null);
-  const subscriptions = [];
+  const subscriptions = new Set();
+  const transportSubscriptions = new Set();
+  const unsubscribeAll = (set) => {
+    for (const unsubscribe of [...set]) unsubscribe();
+  };
   // Symbols and `then` stay readable, so inspecting or resolving a closed
   // handle doesn't throw; every named member does.
   const ensureOpen = (property) => {
@@ -77,7 +81,7 @@ function lease(key, entry, connection) {
   };
   const close = () => {
     if (!closed) {
-      for (const unsubscribe of subscriptions.splice(0)) unsubscribe();
+      unsubscribeAll(subscriptions);
       closed = release(key, entry);
     }
     return closed;
@@ -88,9 +92,20 @@ function lease(key, entry, connection) {
     if (shared.get(key) === entry) shared.delete(key);
     return connection.setDialogPolicy(policy);
   };
-  const tracked = (subscribe) => (...args) => {
-    const unsubscribe = subscribe(...args);
-    subscriptions.push(unsubscribe);
+  // An unsubscribe forgets itself, so a handle that subscribes and
+  // unsubscribes keeps nothing, and close() or clearListeners() never runs a
+  // spent unsubscribe that would remove the same function registered since by
+  // another holder (#82).
+  const tracked = (subscribe, ...sets) => (...args) => {
+    const remove = subscribe(...args);
+    let removed = false;
+    const unsubscribe = () => {
+      if (removed) return;
+      removed = true;
+      for (const set of sets) set.delete(unsubscribe);
+      remove();
+    };
+    for (const set of sets) set.add(unsubscribe);
     return unsubscribe;
   };
   const readOnly = (what, get) => ({
@@ -101,22 +116,17 @@ function lease(key, entry, connection) {
   });
   const client = connection.cdp;
   // Transport events reach every holder: through a handle, clearListeners
-  // removes only that handle's listeners and emit is refused.
-  const transportSubscriptions = [];
+  // removes only that handle's listeners and emit is refused. The emitter keys
+  // listeners by function, so each registration gets a function of its own:
+  // two holders adding the same function never share one entry that either
+  // could remove (#140).
   const transportEvents = new Proxy(client.transportEvents, readOnly("the shared transport events", (target, property) => {
     ensureOpen(property);
     if (property === "on") {
-      return (...args) => {
-        const unsubscribe = tracked(target.on.bind(target))(...args);
-        transportSubscriptions.push(unsubscribe);
-        return unsubscribe;
-      };
+      const on = (name, listener) => target.on(name, (event) => listener(event));
+      return tracked(on, subscriptions, transportSubscriptions);
     }
-    if (property === "clearListeners") {
-      return () => {
-        for (const unsubscribe of transportSubscriptions.splice(0)) unsubscribe();
-      };
-    }
+    if (property === "clearListeners") return () => unsubscribeAll(transportSubscriptions);
     if (property === "emit") {
       return () => {
         throw new TypeError("cannot emit transport events through a handle: every holder of this connection hears them");
@@ -128,7 +138,7 @@ function lease(key, entry, connection) {
     ensureOpen(property);
     if (property === "setDialogPolicy") return setDialogPolicy;
     if (property === "close") return close;
-    if (property === "on") return tracked(target.on.bind(target));
+    if (property === "on") return tracked(target.on.bind(target), subscriptions);
     if (property === "transportEvents") return transportEvents;
     return bindTo(target, Reflect.get(target, property, target));
   }));
@@ -201,6 +211,32 @@ function isPlainData(value, path = new Set()) {
   }
 }
 
+// A frozen deep copy of shareable options (plain data, so only arrays and
+// objects need copying; functions keep their identity). The shared connection
+// is opened with and compared against this copy, so a caller mutating its
+// options object after attaching changes neither the live connection nor which
+// later attaches share it, and a handle can't change the policy in place (#81).
+function frozenCopy(value) {
+  if (value === null || typeof value !== "object") return value;
+  const copy = Array.isArray(value)
+    ? new Array(value.length)
+    : Object.create(Object.getPrototypeOf(value));
+  for (const key of Object.keys(value)) {
+    Object.defineProperty(copy, key, { value: frozenCopy(value[key]), enumerable: true });
+  }
+  return Object.freeze(copy);
+}
+
+// The options a shared connection is opened with: the snapshot, plus a frozen
+// default dialog policy of its own when the caller passed none, so no holder
+// can change the live policy in place through handle.cdp.dialogPolicy (#81).
+// The snapshot itself stays the sharing key, so an attach that names no policy
+// still differs from one that asks for { accept: true }.
+function openingOptions(snapshot) {
+  if (snapshot?.dialogPolicy != null || snapshot?.client?.dialogPolicy != null) return snapshot;
+  return Object.freeze({ ...snapshot, dialogPolicy: Object.freeze({ accept: true }) });
+}
+
 // An authorizer is a credential: two callers never share one connection
 // through it, even with the same authorizer object (#79 review).
 export function canShareConnection(options) {
@@ -217,10 +253,11 @@ export async function acquireSharedConnection(
   { open, timeoutMs },
 ) {
   if (!canShareConnection(options)) return open(options);
+  const snapshot = frozenCopy(options);
   let entry = shared.get(webSocketDebuggerUrl);
-  if (entry && !isDeepStrictEqual(entry.options, options)) return open(options);
+  if (entry && !isDeepStrictEqual(entry.options, snapshot)) return open(openingOptions(snapshot));
   if (!entry) {
-    entry = { options, refs: 0, ready: open(options) };
+    entry = { options: snapshot, refs: 0, ready: open(openingOptions(snapshot)) };
     shared.set(webSocketDebuggerUrl, entry);
   }
   entry.refs += 1;

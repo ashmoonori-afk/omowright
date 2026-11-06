@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,7 +16,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as omowright from "../src/index.js";
-import { restrictToOwner, windowsSystemTool } from "../src/owner-only.js";
+import { restrictNewFileToOwner, restrictToOwner, windowsSystemTool } from "../src/owner-only.js";
 import { assertOwnerOnly } from "./fixtures/owner-only.mjs";
 
 const fakePipeBrowser = fileURLToPath(
@@ -327,6 +329,57 @@ test("named cloak launch detects an unregistered holder on the legacy port", asy
   }
 });
 
+// Security contract (#80): a named cloak launch dials 127.0.0.1:9242, where an
+// unregistered CloakBrowser listens, only when its caller names that endpoint.
+// The test binds the port and counts accepts, so any transport that reaches it
+// is seen. Both launches fail on the instance name, which connectNamed checks
+// after the launch guard has run and before it spawns anything; the second one
+// names the port and must reach it, so the first one's zero cannot come from a
+// guard that never ran. Skipped only when another process holds 9242.
+const DEFAULT_CLOAK_PORT = 9242;
+// 404 lets a probe pass through to the launch, so a regression fails on the
+// accept count rather than on the probe's own error.
+const defaultPortListener = createServer((_req, res) => res.writeHead(404).end());
+const defaultPortBound = await new Promise((resolve) => {
+  defaultPortListener.once("error", () => resolve(false));
+  defaultPortListener.listen(DEFAULT_CLOAK_PORT, "127.0.0.1", () => resolve(true));
+});
+defaultPortListener.unref();
+
+test("a named cloak launch dials 127.0.0.1:9242 only when legacyProbeUrl names it", {
+  skip: !defaultPortBound && `127.0.0.1:${DEFAULT_CLOAK_PORT} is held by another process`,
+}, async () => {
+  const registryRoot = mkdtempSync(path.join(tmpdir(), "nir-registry-"));
+  const mineDir = mkdtempSync(path.join(tmpdir(), "nir-mine-"));
+  let accepted = 0;
+  defaultPortListener.on("connection", () => {
+    accepted += 1;
+  });
+  const launch = (options) =>
+    assert.rejects(
+      omowright.connectCloakProfile({
+        name: "not a valid name",
+        browserPath: process.execPath,
+        profileDir: mineDir,
+        fingerprintSeed: 12345,
+        registryRoot,
+        ...options,
+      }),
+      (error) => error instanceof TypeError && /instance name/.test(error.message),
+    );
+  try {
+    await launch({});
+    assert.equal(accepted, 0, `connections accepted on 127.0.0.1:${DEFAULT_CLOAK_PORT} without legacyProbeUrl`);
+    await launch({ legacyProbeUrl: `http://127.0.0.1:${DEFAULT_CLOAK_PORT}` });
+    assert.ok(accepted > 0, "a launch whose legacyProbeUrl names the port reaches it");
+  } finally {
+    defaultPortListener.closeAllConnections();
+    await new Promise((resolve) => defaultPortListener.close(resolve));
+    rmSync(registryRoot, { recursive: true, force: true });
+    rmSync(mineDir, { recursive: true, force: true });
+  }
+});
+
 // Contract owner: the Windows owner-only hardening (security contract). The
 // Windows tools run by absolute System32 path, so a cwd another user can write
 // cannot substitute them, and every failure throws, so no caller goes on with
@@ -335,16 +388,21 @@ test("named cloak launch detects an unregistered holder on the legacy port", asy
 // is asserted by the cloak-profile and instances tests through Get-Acl.
 const SID = "S-1-5-21-1-2-3-1001";
 
-function spawner({ whoami = `"host\\me","${SID}"\r\n`, icacls } = {}) {
+// `sddl` is the DACL `icacls /save` reports for a directory, written as UTF-16
+// like the real tool writes it; the default is a fresh, inheriting directory.
+function spawner({ whoami = `"host\\me","${SID}"\r\n`, icacls, sddl = "D:AI(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)" } = {}) {
   const calls = [];
   const run = async (file, args) => {
     calls.push({ file, args });
     if (file.endsWith("whoami.exe")) return { stdout: whoami, stderr: "" };
     if (icacls) throw icacls;
+    if (args[1] === "/save") writeFileSync(args[2], `profile\r\n${sddl}\r\n`, "utf16le");
     return { stdout: "", stderr: "" };
   };
   return { calls, run };
 }
+
+const grants = (calls) => calls.filter(({ args }) => args.includes("/grant:r")).map(({ args }) => args[0]);
 
 test("windowsSystemTool resolves under SystemRoot, then windir, then C:\\Windows", () => {
   assert.equal(windowsSystemTool("icacls.exe", { SystemRoot: "D:\\Win" }), "D:\\Win\\System32\\icacls.exe");
@@ -358,13 +416,149 @@ test("restrictToOwner on win32 runs whoami and icacls by absolute path with an o
   await restrictToOwner("C:\\data\\profile\\seed.json", "file", { platform: "win32", run });
   for (const { file } of calls) assert.ok(path.win32.isAbsolute(file), `${file} is not an absolute path`);
   assert.deepEqual(
-    calls.filter(({ file }) => file === windowsSystemTool("icacls.exe")).map(({ args }) => args),
+    calls.filter(({ file, args }) => file === windowsSystemTool("icacls.exe") && args.includes("/grant:r")).map(({ args }) => args),
     [
       ["C:\\data\\profile", "/inheritance:r", "/grant:r", `*${SID}:(OI)(CI)F`, "/Q"],
       ["C:\\data\\profile\\seed.json", "/inheritance:r", "/grant:r", `*${SID}:F`, "/Q"],
     ],
   );
   assert.ok(calls.some(({ file }) => file === windowsSystemTool("whoami.exe")));
+});
+
+// Cost contract (#104): re-granting an inheritable DACL makes Windows rewrite
+// the inherited entries of every file below the directory, thousands on a used
+// Chromium profile. A directory that is already protected and grants the user
+// exactly what restrictToOwner would is read once and left alone; anything
+// else is granted as before. A file created inside a directory this process
+// restricted inherits that grant, so restrictNewFileToOwner runs no tool for it.
+// Owner-only means no allow entry for anyone outside the user and the trusted set (SYSTEM, Administrators and
+// TrustedInstaller, plus OWNER RIGHTS and CREATOR OWNER); a protected DACL that also grants someone else is granted
+// again, and that trustee's explicit grants are removed, since the grant itself keeps explicit entries.
+test("restrictToOwner on win32 leaves an already owner-only directory alone", async () => {
+  const TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+  // [label, DACL, directories granted, removal argv, user SID]
+  const cases = [
+    ["protected, user granted (OI)(CI)F", `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;${SID})`, [], []],
+    ["protected, the built-in Administrator account as LA", "D:PAI(A;OICI;FA;;;LA)", [], [], "S-1-5-21-1-2-3-500"],
+    [
+      "protected, user plus the trusted set",
+      `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;${TRUSTED_INSTALLER})(A;;FA;;;OW)(A;OICIIO;FA;;;CO)(A;OICI;FA;;;${SID})`,
+      [],
+      [],
+    ],
+    ["protected, denying someone else", `D:PAI(D;OICI;FA;;;BG)(A;OICI;FA;;;${SID})`, [], []],
+    ["still inheriting", `D:AI(A;OICI;FA;;;${SID})(A;OICIID;FA;;;BU)`, ["C:\\d"], []],
+    ["protected, user grant without inheritance", `D:PAI(A;;FA;;;${SID})`, ["C:\\d"], []],
+    ["protected, user granted twice", `D:PAI(A;OICI;FA;;;${SID})(A;;0x1200a9;;;${SID})`, ["C:\\d"], []],
+    [
+      "protected, also granting Everyone, Users and another account",
+      `D:PAI(A;OICI;FA;;;${SID})(A;OICI;0x1200a9;;;WD)(A;;FA;;;BU)(A;OICI;FA;;;S-1-5-21-9-9-9-1002)(A;;FA;;;WD)`,
+      ["C:\\d"],
+      [["C:\\d", "/remove:g", "*WD", "*BU", "*S-1-5-21-9-9-9-1002", "/Q"]],
+    ],
+    // A conditional ACE nests parentheses and may quote them; an entry after it still counts.
+    [
+      "protected, a conditional entry before a grant to Everyone",
+      `D:PAI(A;OICI;FA;;;${SID})(XA;OICI;FA;;;SY;(@User.title == ")" || Member_of {SID(BA)}))(A;OICI;FA;;;WD)`,
+      ["C:\\d"],
+      [["C:\\d", "/remove:g", "*WD", "/Q"]],
+    ],
+    // An integrity label or audit entries follow the DACL on the same line.
+    ["protected, user granted, with a SACL", `D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;${SID})S:AI(ML;OICI;NW;;;LW)`, [], []],
+    ["no ACL on the volume", "D:NO_ACCESS_CONTROL", ["C:\\d"], []],
+  ];
+  for (const [label, sddl, expected, removals, sid = SID] of cases) {
+    const { calls, run } = spawner({ sddl, whoami: `"host\\me","${sid}"\r\n` });
+    await restrictToOwner("C:\\d", "directory", { platform: "win32", run });
+    assert.deepEqual(grants(calls), expected, label);
+    assert.deepEqual(calls.filter(({ args }) => args[1] === "/remove:g").map(({ args }) => args), removals, label);
+    assert.equal(calls.filter(({ args }) => args[1] === "/save").length, 1, label);
+  }
+});
+
+// A file created inside a directory this process restricted inherits that grant, so restrictNewFileToOwner runs no
+// tool for it. The memo follows the directory itself (volume and file id), not its name: a directory that took the
+// restricted one's name never got the grant, so files created in it need their own.
+test("restrictNewFileToOwner on win32 relies on the grant only inside the directory restrictToOwner handled", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "omowright-acl-memo-"));
+  try {
+    const [owned, other, replacement] = ["owned", "other", "replacement"].map((name) => path.join(root, name));
+    for (const dir of [owned, other, replacement]) mkdirSync(dir);
+    const { calls, run } = spawner();
+    await restrictToOwner(owned, "directory", { platform: "win32", run });
+    await restrictNewFileToOwner(path.join(owned, "a.lock.tmp"), { platform: "win32", run });
+    await restrictNewFileToOwner(path.join(other, "a.lock.tmp"), { platform: "win32", run });
+    rmSync(owned, { recursive: true });
+    renameSync(replacement, owned);
+    await restrictNewFileToOwner(path.join(owned, "b.lock.tmp"), { platform: "win32", run });
+    assert.deepEqual(grants(calls), [owned, path.join(other, "a.lock.tmp"), path.join(owned, "b.lock.tmp")]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A fresh temp directory in which names differing only in case are different entries, or null. Linux file systems are
+// case-sensitive; Windows turns it on per directory with fsutil, which a host may not support.
+function caseSensitiveTempDir() {
+  const dir = mkdtempSync(path.join(tmpdir(), "omowright-acl-case-"));
+  if (process.platform === "win32") {
+    spawnSync(windowsSystemTool("fsutil.exe"), ["file", "setCaseSensitiveInfo", dir, "enable"], { windowsHide: true });
+  }
+  mkdirSync(path.join(dir, "probe"));
+  const caseSensitive = !existsSync(path.join(dir, "PROBE"));
+  rmSync(caseSensitive ? path.join(dir, "probe") : dir, { recursive: true, force: true });
+  return caseSensitive ? dir : null;
+}
+const CASE_SENSITIVE_DIRS = (() => {
+  const dir = caseSensitiveTempDir();
+  if (dir) rmSync(dir, { recursive: true, force: true });
+  return dir !== null;
+})();
+
+// On a case-sensitive directory (NTFS can have them too) two names that differ only in case are two directories.
+test("restrictNewFileToOwner on win32 tells apart directories whose names differ only in case", {
+  skip: !CASE_SENSITIVE_DIRS && "no case-sensitive directory available on this host",
+}, async () => {
+  const root = caseSensitiveTempDir();
+  try {
+    const [lower, upper] = ["state", "STATE"].map((name) => path.join(root, name));
+    for (const dir of [lower, upper]) mkdirSync(dir);
+    const { calls, run } = spawner();
+    await restrictToOwner(lower, "directory", { platform: "win32", run });
+    await restrictNewFileToOwner(path.join(upper, "a.lock.tmp"), { platform: "win32", run });
+    assert.deepEqual(grants(calls), [lower, path.join(upper, "a.lock.tmp")]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The same contract against the real icacls output on a Windows host.
+test("restrictToOwner on Windows re-reads an owner-only directory instead of re-granting it", { skip: process.platform !== "win32", timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "omowright-acl-"));
+  const calls = [];
+  const run = (file, args, options) => {
+    calls.push({ file, args });
+    return new Promise((resolve, reject) => {
+      execFile(file, args, options, (error, stdout, stderr) => (error ? reject(error) : resolve({ stdout, stderr })));
+    });
+  };
+  try {
+    await restrictToOwner(dir, "directory", { run });
+    assert.deepEqual(grants(calls), [dir]);
+    calls.length = 0;
+    await restrictToOwner(dir, "directory", { run });
+    assert.deepEqual(grants(calls), []);
+    await assertOwnerOnly([dir, "directory"]);
+    // An explicit grant to Everyone keeps the DACL protected, but it is no longer owner-only: the directory is
+    // granted again and the extra grant removed (icacls /save names Everyone by its SDDL alias WD).
+    execFileSync(windowsSystemTool("icacls.exe"), [dir, "/grant", "*S-1-1-0:(OI)(CI)RX", "/Q"], { windowsHide: true });
+    calls.length = 0;
+    await restrictToOwner(dir, "directory", { run });
+    assert.deepEqual(grants(calls), [dir]);
+    await assertOwnerOnly([dir, "directory"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("restrictToOwner on win32 fails closed when a tool is missing, fails, or names no SID", async () => {

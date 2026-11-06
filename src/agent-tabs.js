@@ -38,11 +38,30 @@ export class AgentTabManager {
     if (this.#disposed) throw Error("Agent tab manager is disposed");
     await this.ready;
     const viewport = { ...this.viewport, ...(options.viewport ?? {}) };
-    const result = await this.#connection.cdp.send("Target.createTarget", { url, background: true }, undefined, { capability: CAPABILITY });
+    // A headed browser keeps a background tab in a shared window hidden: it never
+    // paints (Page.captureScreenshot hangs) and requestAnimationFrame never fires.
+    // Its own window doesn't take focus from the user's tab, and the tab renders
+    // (verified headed on Linux and macOS).
+    const result = await this.#connection.cdp.send("Target.createTarget", {
+      url: "about:blank", background: true, newWindow: true,
+      ...(options.browserContextId ? { browserContextId: options.browserContextId } : {}),
+    }, undefined, { capability: CAPABILITY });
     const targetId = result.targetId;
     // CloakBrowser headless defers renderer startup for background targets until
     // activation; activating before attach avoids Page.enable timing out.
     if (await this.#isHeadless()) await this.#connection.cdp.send("Target.activateTarget", { targetId });
+    // Finish session/domain setup on a stable document before starting a
+    // navigation that can replace the renderer or its execution contexts.
+    const tab = await this.adopt(targetId, { viewport });
+    if (url !== "about:blank") await tab.page.goto(url);
+    return tab;
+  }
+
+  async adopt(targetId, options = {}) {
+    if (this.#disposed) throw Error("Agent tab manager is disposed");
+    const existing = this.#owned.get(targetId);
+    if (existing) return this.#public(existing);
+    const viewport = { ...this.viewport, ...(options.viewport ?? {}) };
     const record = { targetId, page: null, viewport: Object.freeze({ ...viewport }), repinQueue: Promise.resolve() };
     this.#owned.set(targetId, record);
     try {
@@ -141,6 +160,10 @@ export class AgentTabManager {
     this.#unsubscribers = [];
     if (failure) throw failure;
   }
+}
+
+export function getAgentTabs(connection) {
+  return managers.get(connection);
 }
 
 export function createAgentTabs(connection, options = {}) {

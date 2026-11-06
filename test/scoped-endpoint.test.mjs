@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { createServer } from "node:http";
 import { mkdtempSync, existsSync, globSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,7 +53,9 @@ async function launchChromium(userDataDir) {
 
 // The endpoint under test: answers discovery, demands the Bearer token on every request and the upgrade, and
 // forwards only allowlisted methods to the real browser.
-async function startScopedEndpoint(upstream) {
+async function startScopedEndpoint(upstream, { refuseRuntime = false } = {}) {
+  const commands = [];
+  const events = new EventEmitter();
   const refused = [];
   const unauthorized = [];
   const authorized = (req) => {
@@ -95,7 +97,9 @@ async function startScopedEndpoint(upstream) {
       client.on("close", () => browser.close());
       client.on("message", (data) => {
         const message = JSON.parse(data.toString());
-        if (!ALLOWED.has(message.method)) {
+        commands.push(message.method);
+        events.emit(message.method, message);
+        if (!ALLOWED.has(message.method) || (refuseRuntime && message.method === "Runtime.enable")) {
           refused.push(message.method);
           client.send(JSON.stringify({ id: message.id, sessionId: message.sessionId, error: { code: -32601, message: `'${message.method}' wasn't found` } }));
           return;
@@ -106,19 +110,21 @@ async function startScopedEndpoint(upstream) {
     });
   });
   const port = await listen(server);
-  return { url: `http://127.0.0.1:${port}`, refused, unauthorized, close: () => new Promise((r) => { wss.close(); server.close(() => r()); }) };
+  return { url: `http://127.0.0.1:${port}`, commands, events, refused, unauthorized, close: () => new Promise((r) => { wss.close(); server.close(() => r()); }) };
 }
 
 test("the page API runs through an endpoint that allows only OMOWRIGHT_PAGE_CDP_METHODS", { skip: !SHELL && "no chromium binary found", timeout: 90000 }, async () => {
   const userDataDir = mkdtempSync(path.join(tmpdir(), "omowright-scoped-"));
   const site = createServer((_req, res) => res.writeHead(200, { "content-type": "text/html" }).end(PAGE));
   const sitePort = await listen(site);
-  const upstream = await launchChromium(userDataDir);
-  const endpoint = await startScopedEndpoint(upstream);
   const forceRefreshes = [];
   let token = "Bearer scoped-stale";
+  let upstream;
+  let endpoint;
   let connection;
   try {
+    upstream = await launchChromium(userDataDir);
+    endpoint = await startScopedEndpoint(upstream);
     connection = await connect(endpoint.url, {
       storageRoot: userDataDir,
       client: {
@@ -133,6 +139,7 @@ test("the page API runs through an endpoint that allows only OMOWRIGHT_PAGE_CDP_
       },
     });
     const { page } = await createAgentTabs(connection).create("about:blank");
+    assert.equal(endpoint.commands.filter(method => method === "Runtime.enable").length, 0, "page setup without console listeners must not enable Runtime");
     await page.goto(`http://127.0.0.1:${sitePort}/`);
     const snapshot = compactSnapshot(await page.snapshot());
     assert.match(snapshot, /button "Greet"/);
@@ -145,13 +152,59 @@ test("the page API runs through an endpoint that allows only OMOWRIGHT_PAGE_CDP_
     assert.deepEqual(endpoint.refused, [], `methods outside OMOWRIGHT_PAGE_CDP_METHODS: ${endpoint.refused.join(", ")}`);
     assert.ok(forceRefreshes.includes(true), "a 401 makes the authorizer refresh");
     assert.ok(endpoint.unauthorized.length > 0, "the stale token was refused");
+    const enabled = once(endpoint.events, "Runtime.enable", { signal: AbortSignal.timeout(5000) });
+    const firstListener = () => {};
+    const secondListener = firstListener;
+    const removeFirst = page.on("console", firstListener);
+    await enabled;
+    page.on("console", secondListener);
+    removeFirst();
+    await page.evaluate("console.log('second listener still active')");
+    assert.equal(endpoint.commands.filter(method => method === "Runtime.enable").length, 1);
+    assert.equal(endpoint.commands.filter(method => method === "Runtime.disable").length, 0);
+    const disabled = once(endpoint.events, "Runtime.disable", { signal: AbortSignal.timeout(5000) });
+    page.off("console", secondListener);
+    await disabled;
+    assert.equal(endpoint.commands.filter(method => method === "Runtime.disable").length, 1);
   } finally {
     await connection?.close().catch(() => {});
-    await endpoint.close();
-    const exited = upstream.child.exitCode === null ? once(upstream.child, "exit") : Promise.resolve();
-    upstream.child.kill();
-    await exited;
+    await endpoint?.close();
+    if (upstream) {
+      const exited = upstream.child.exitCode === null ? once(upstream.child, "exit") : Promise.resolve();
+      upstream.child.kill();
+      await exited;
+    }
     site.close();
+    removeTreeSync(userDataDir);
+  }
+});
+
+// Optional console capture must not turn an older endpoint's Runtime refusal into a page setup failure.
+test("page setup and evaluation survive an endpoint refusing Runtime.enable", { skip: !SHELL && "no chromium binary found", timeout: 60000 }, async () => {
+  const userDataDir = mkdtempSync(path.join(tmpdir(), "omowright-runtime-refusal-"));
+  let upstream;
+  let endpoint;
+  let connection;
+  try {
+    upstream = await launchChromium(userDataDir);
+    endpoint = await startScopedEndpoint(upstream, { refuseRuntime: true });
+    connection = await connect(endpoint.url, { storageRoot: userDataDir, client: { authorizer: { resolveAuthorization: async () => GOOD } } });
+    const { page } = await createAgentTabs(connection).create("about:blank");
+    assert.equal(await page.evaluate("21 * 2"), 42);
+    const refused = once(endpoint.events, "Runtime.enable", { signal: AbortSignal.timeout(5000) });
+    const remove = page.on("console", () => {});
+    await refused;
+    assert.equal(await page.evaluate("6 * 7"), 42, "Runtime refusal must not poison later commands");
+    remove();
+    assert.deepEqual(endpoint.refused, ["Runtime.enable"]);
+  } finally {
+    await connection?.close().catch(() => {});
+    await endpoint?.close();
+    if (upstream) {
+      const exited = upstream.child.exitCode === null ? once(upstream.child, "exit") : Promise.resolve();
+      upstream.child.kill();
+      await exited;
+    }
     removeTreeSync(userDataDir);
   }
 });
@@ -159,21 +212,16 @@ test("the page API runs through an endpoint that allows only OMOWRIGHT_PAGE_CDP_
 
 // Security contract (#75): a CdpClient has no default endpoint. 127.0.0.1:9222 is where a user's own Chrome listens
 // once remote debugging is enabled from chrome://inspect, so a missing URL must refuse, never dial a browser there.
-// fetch and WebSocket are intercepted at the global boundary the client dials through; nothing reaches the network.
+// fetch is intercepted at the global boundary, so an HTTP discovery dial is recorded and blocked. WebSocket is not:
+// src/core.js imports ws directly, so a direct ws:// dial bypasses any global stub; such a regression fails on the
+// "refused" outcomes, which the constructor must produce before it dials anything.
 // The 15 s budget only matters on a regression: an unrefused client walks its full reconnect schedule (~5.5 s).
 test("a CdpClient without a URL refuses and dials nothing", { timeout: 15_000 }, async () => {
   const dialed = [];
   const realFetch = globalThis.fetch;
-  const RealWebSocket = globalThis.WebSocket;
   globalThis.fetch = async (url) => {
     dialed.push(String(url));
     throw new Error("network blocked by test");
-  };
-  globalThis.WebSocket = class {
-    constructor(url) {
-      dialed.push(String(url));
-      throw new Error("network blocked by test");
-    }
   };
   const outcomes = [];
   try {
@@ -189,7 +237,6 @@ test("a CdpClient without a URL refuses and dials nothing", { timeout: 15_000 },
     }
   } finally {
     globalThis.fetch = realFetch;
-    globalThis.WebSocket = RealWebSocket;
   }
   assert.deepEqual({ outcomes, dialed }, { outcomes: ["refused", "refused", "refused"], dialed: [] });
 });
@@ -198,6 +245,65 @@ test("a CdpClient without a URL refuses and dials nothing", { timeout: 15_000 },
 // close() runs must neither install its socket nor keep retrying: a closed
 // client that reconnects holds its caller's process open and, through a port,
 // can reach whatever process holds that port by then (#101 review).
+for (const reopen of [false, true]) {
+  test(`close during discovery ${reopen ? "allows a fresh connection" : "opens no socket and logs no reconnect warning"}`, { timeout: 5_000 }, async () => {
+    const realWarn = console.warn;
+    const discovered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const warnings = [];
+    let requests = 0;
+    const server = createServer(async (_req, res) => {
+      if (++requests === 2) {
+        discovered.resolve();
+        await release.promise;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ webSocketDebuggerUrl: `ws://127.0.0.1:${server.address().port}/devtools/browser/test` }));
+    });
+    const sockets = new WebSocketServer({ noServer: true });
+    let upgrades = 0;
+    server.on("upgrade", (req, socket, head) => {
+      upgrades++;
+      sockets.handleUpgrade(req, socket, head, (ws) => sockets.emit("connection", ws));
+    });
+    sockets.on("connection", (ws) => {
+      ws.on("message", (data) => {
+        const { id } = JSON.parse(data);
+        ws.send(JSON.stringify({ id, result: {} }));
+      });
+    });
+    const port = await listen(server);
+    console.warn = (...args) => warnings.push(args);
+    const client = new CdpClient({ cdpUrl: `http://127.0.0.1:${port}`, reconnectDelaysMs: [0] });
+    try {
+      await client.ensureConnected();
+      [...sockets.clients][0].terminate();
+      await discovered.promise;
+      // Join only to observe when the old background attempt settles.
+      const stale = client.ensureConnected().catch((error) => error);
+      await client.close();
+      const fresh = reopen ? client.ensureConnected() : Promise.resolve();
+      // Attach the rejection handler before releasing the stale attempt.
+      const outcome = Promise.allSettled([fresh]);
+      release.resolve();
+      await stale;
+      const [result] = await outcome;
+      assert.equal(result.status, "fulfilled", String(result.reason));
+      assert.equal(client.isConnected, reopen);
+      assert.equal(upgrades, reopen ? 2 : 1, "stale discovery must not open a socket");
+      assert.deepEqual(warnings, [], "deliberate close must not warn");
+    } finally {
+      release.resolve();
+      await client.close();
+      for (const ws of sockets.clients) ws.terminate();
+      sockets.close();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+      console.warn = realWarn;
+    }
+  });
+}
+
 test("a CdpClient closed while it is reconnecting stays closed", { timeout: 15_000 }, async () => {
   const server = createServer((req, res) => {
     res.writeHead(200, { "content-type": "application/json" });

@@ -33,12 +33,16 @@ function activePortIdentity(info) {
 // A DevToolsActivePort that is already there before the spawn was written by
 // an earlier run or by another browser on the same profile (#74). Taken before
 // the spawn, so discovery can tell it from the file the new browser writes.
+// The bytes are kept as well as the identity: an identity change does not prove
+// the bytes changed (Linux updates mtime before it copies a write's data, and a
+// touch or an in-place rewrite moves it too), and stale bytes name another
+// browser whose id the launch check would then compare against itself (#107).
 export async function snapshotActivePort(profileDir) {
   if (!profileDir) return null;
+  const activePortPath = path.join(profileDir, "DevToolsActivePort");
   try {
-    return activePortIdentity(
-      await stat(path.join(profileDir, "DevToolsActivePort")),
-    );
+    const identity = activePortIdentity(await stat(activePortPath));
+    return { ...identity, text: await readFile(activePortPath, "utf8") };
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
@@ -98,7 +102,9 @@ export async function discoverLaunchedEndpoint(
     const readActivePort = async () => {
       const info = await stat(activePortPath);
       if (isSameFile(activePortIdentity(info), previousActivePort)) return;
-      const report = parseActivePort(await readFile(activePortPath, "utf8"));
+      const text = await readFile(activePortPath, "utf8");
+      if (previousActivePort !== null && text === previousActivePort.text) return;
+      const report = parseActivePort(text);
       if (report) finish(null, report);
     };
 

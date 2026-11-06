@@ -1,7 +1,7 @@
 /**
  * Every CDP command the page path sends (`connect()`, the page API, frame snapshots, agent tabs and their viewport
  * pin). A scoped endpoint can allow exactly these and refuse the rest. Optional modules send more and need a full
- * endpoint: routes, emulation, cookies, network snoop, `createEvents()` (`Browser.setDownloadBehavior`), the
+ * endpoint: routes, emulation, cookies, `createEvents()` (`Browser.setDownloadBehavior`), the
  * bridge and `connectPipe`. `test/scoped-endpoint.test.mjs` runs navigate, snapshot, fill, click, evaluate,
  * screenshot and agent tabs through such an endpoint; the other listed methods (PDF, history, reload, dialogs, file
  * upload, screencast, lifecycle) are listed from the source, not exercised there. No cookie read is listed: an
@@ -20,11 +20,15 @@ export const OMOWRIGHT_PAGE_CDP_METHODS = Object.freeze([
   "DOM.setFileInputFiles",
   "Emulation.setDeviceMetricsOverride",
   "Emulation.setFocusEmulationEnabled",
+  "Emulation.setEmulatedMedia",
   "Input.dispatchKeyEvent",
   "Input.dispatchMouseEvent",
   "Input.insertText",
   "Inspector.enable",
+  "Network.disable",
   "Network.enable",
+  "Network.getResponseBody",
+  "Network.setExtraHTTPHeaders",
   "Page.addScriptToEvaluateOnNewDocument",
   "Page.captureScreenshot",
   "Page.close",
@@ -45,8 +49,14 @@ export const OMOWRIGHT_PAGE_CDP_METHODS = Object.freeze([
   "Page.startScreencast",
   "Page.stopScreencast",
   "Runtime.callFunctionOn",
+  "Runtime.addBinding",
+  "Runtime.disable",
+  "Runtime.discardConsoleEntries",
+  "Runtime.enable",
   "Runtime.evaluate",
   "Runtime.releaseObject",
+  "Runtime.removeBinding",
+  "Runtime.runIfWaitingForDebugger",
   "Target.activateTarget",
   "Target.attachToTarget",
   "Target.closeTarget",

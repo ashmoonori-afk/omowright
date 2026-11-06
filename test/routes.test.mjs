@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRoutes } from "../src/routes.js";
+import { OmOPage } from "../src/core.js";
 
 class FakeEmitter {
   #listeners = new Map();
@@ -252,4 +253,63 @@ test("unroute removes a match and disables Fetch when no routes remain", async (
   assert.equal(callsOf(page, "Fetch.disable").length, 2);
 
   await routes.dispose();
+});
+
+test("page routing is lazy, shares its controller, and recovers from a refused enable", async () => {
+  const page = fakePage();
+  const routes = createRoutes(page);
+  assert.equal(createRoutes(page), routes);
+  assert.equal(page.cdp.calls.length, 0);
+  const send = page.cdp.send.bind(page.cdp);
+  page.cdp.send = async (method, ...args) => {
+    if (method === "Fetch.enable") throw new Error("Fetch refused");
+    return send(method, ...args);
+  };
+  await assert.rejects(OmOPage.prototype.route.call(page, "**/refused", route => route.abort()), /Fetch refused/);
+  assert.equal(routes.enabled, false);
+  page.cdp.send = send;
+  await OmOPage.prototype.route.call(page, "**/kept", route => route.abort());
+  const continued = new Promise(resolve => {
+    page.cdp.send = async (method, ...args) => {
+      const result = await send(method, ...args);
+      if (method === "Fetch.continueRequest") resolve(args[0]);
+      return result;
+    };
+  });
+  page.cdp.emit("Fetch.requestPaused", paused("https://example.test/refused"), { sessionId: "sess-1" });
+  assert.equal((await continued).requestId, "req-1");
+  await OmOPage.prototype.unrouteAll.call(page);
+  assert.equal(routes.enabled, false);
+  assert.equal(callsOf(page, "Fetch.enable").length, 1);
+  assert.equal(callsOf(page, "Fetch.disable").length, 1);
+});
+
+test("times reserves concurrent matches once and disables after settlement", async () => {
+  const page = fakePage();
+  const routes = createRoutes(page);
+  let release;
+  const ready = new Promise(resolve => { release = resolve; });
+  let hits = 0;
+  await OmOPage.prototype.route.call(page, "**/*", async route => {
+    hits += 1;
+    await ready;
+    await route.fulfill({ body: "once" });
+  }, { times: 1 });
+  const send = page.cdp.send.bind(page.cdp);
+  let disabled;
+  const done = new Promise(resolve => { disabled = resolve; });
+  page.cdp.send = async (method, ...args) => {
+    const result = await send(method, ...args);
+    if (method === "Fetch.disable") disabled();
+    return result;
+  };
+  page.cdp.emit("Fetch.requestPaused", paused("https://example.test/one", { requestId: "one" }), { sessionId: "sess-1" });
+  page.cdp.emit("Fetch.requestPaused", paused("https://example.test/two", { requestId: "two" }), { sessionId: "sess-1" });
+  assert.equal(hits, 1);
+  release();
+  await done;
+  await routes.unroute();
+  assert.equal(callsOf(page, "Fetch.fulfillRequest").length, 1);
+  assert.equal(callsOf(page, "Fetch.continueRequest").length, 1);
+  assert.equal(routes.enabled, false);
 });

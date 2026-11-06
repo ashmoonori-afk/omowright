@@ -5,6 +5,11 @@ import { UnsupportedOperationError } from "./core.js";
 import { createProfileApis, chromeTimeToMs } from "./chrome-profile.js";
 
 const EXTENSION_BRIDGE_REQUIRED = "requires the extension bridge in standalone OmOWright";
+// CDP has no window-focus state, and document.hasFocus() is no substitute: OmOWright
+// enables focus emulation on every page it attaches to (other automation clients do
+// too), so those pages report focus, background agent windows included (#122).
+const WINDOW_FOCUS_UNKNOWN = "is unavailable in standalone OmOWright: CDP exposes no window focus state; " +
+  "track chrome.windows.onFocusChanged through the extension bridge instead";
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 
 function matchUrlPattern(url, pattern) {
@@ -73,10 +78,9 @@ export function createChromeApi(connection, options = {}) {
       list.push(tab);
       byWindow.set(tab.windowId, list);
     }
-    return [...byWindow.entries()].map(([windowId, windowTabs], index) => {
+    return [...byWindow.entries()].map(([windowId, windowTabs]) => {
       const win = {
         id: windowId,
-        focused: index === 0,
         type: "normal",
         state: "normal",
         alwaysOnTop: false,
@@ -99,10 +103,8 @@ export function createChromeApi(connection, options = {}) {
       if (all.length === 0) throw new Error("No browser window found");
       return all[0];
     },
-    async getLastFocused(queryOptions = {}) {
-      const all = await collectWindows(queryOptions);
-      if (all.length === 0) throw new Error("No browser window found");
-      return all[0];
+    async getLastFocused() {
+      throw new UnsupportedOperationError(`chrome.windows.getLastFocused ${WINDOW_FOCUS_UNKNOWN}`);
     },
     async getAll(queryOptions = {}) {
       return collectWindows(queryOptions);

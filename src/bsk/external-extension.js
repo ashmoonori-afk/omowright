@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { windowsSystemTool } from "../owner-only.js";
 import { BROWSERSKILL_EXTENSION_IDS, STORE_PAGE_URLS, STORE_UPDATE_URLS, pathFor } from "./browsers.js";
 
 export { BROWSERSKILL_EXTENSION_IDS, STORE_PAGE_URLS, STORE_UPDATE_URLS, catalogBrowsers, detectBrowsers } from "./browsers.js";
@@ -59,7 +60,7 @@ export function isBlocklisted(browser, id, { readFile = readFileSync } = {}) {
 
 function runRegDefault(args) {
   return new Promise((resolve) => {
-    const child = spawn("reg", args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    const child = spawn(windowsSystemTool("reg.exe"), args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
     let stderr = "";
     child.stderr.on("data", (c) => { stderr += c; });
     child.on("error", (error) => resolve({ code: -1, stderr: error.message }));

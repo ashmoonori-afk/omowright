@@ -347,6 +347,106 @@ const holderCases = [
     },
   },
   {
+    // #81: the shared connection keeps a snapshot of the options it was
+    // attached with, not the caller's object.
+    label: "mutating the attach options after connect changes neither other holders nor later attaches",
+    async run({ fake, connectAs }) {
+      const options = { dialogPolicy: { accept: true } };
+      await connectAs(options);
+      const other = await connectAs({ dialogPolicy: { accept: true } });
+      options.dialogPolicy.accept = false;
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [true]);
+      // A later attach asking for what was attached shares; one asking for the
+      // mutated policy gets its own connection.
+      await connectAs({ dialogPolicy: { accept: true } });
+      await connectAs({ dialogPolicy: { accept: false } });
+      assert.deepEqual(fake.upgrades, ["first", "first"]);
+      // The live policy reached through a handle can't be changed in place.
+      assert.throws(() => {
+        other.cdp.dialogPolicy.accept = false;
+      }, TypeError);
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [true, false]);
+    },
+  },
+  {
+    // #81 review: with no dialogPolicy passed, the connection's default policy
+    // is frozen too, so a holder can't change it for the others in place.
+    label: "the default dialog policy cannot be changed in place through a handle",
+    async run({ fake, connectAs }) {
+      const mutating = await connectAs();
+      const other = await connectAs();
+      assert.throws(() => {
+        mutating.cdp.dialogPolicy.accept = false;
+      }, TypeError);
+      assert.equal(other.cdp.dialogPolicy.accept, true);
+      assert.deepEqual(fake.upgrades, ["first"]);
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [true]);
+    },
+  },
+  {
+    // #82: an unsubscribe also drops the handle's record of it, so a handle
+    // that subscribes and unsubscribes N times tracks nothing afterwards. A
+    // record left behind would run again on clearListeners() or close() and
+    // remove the same function another holder registered since.
+    label: "a handle that subscribes and unsubscribes keeps nothing to remove later",
+    async run({ fake, connectAs }) {
+      const churning = await connectAs();
+      const other = await connectAs();
+      const heard = [];
+      const listener = () => heard.push("other");
+      for (let i = 0; i < 50; i += 1) {
+        churning.cdp.transportEvents.on("disconnected", listener)();
+        churning.cdp.on("Target.targetCreated", listener)();
+      }
+      other.cdp.transportEvents.on("disconnected", listener);
+      churning.cdp.transportEvents.clearListeners();
+      await churning.close();
+      const dropped = nextTransportEvent(other, "disconnected");
+      fake.dropConnections();
+      await dropped;
+      assert.deepEqual(heard, ["other"]);
+    },
+  },
+  // #140: each handle's registration is its own entry, even for one function,
+  // so one holder unsubscribing or closing never removes another holder's.
+  ...[
+    { how: "unsubscribes", remove: (_handle, unsubscribe) => unsubscribe() },
+    { how: "closes", remove: (handle) => handle.close() },
+  ].map(({ how, remove }) => ({
+    label: `a handle that ${how} leaves another handle's registration of the same transport listener`,
+    async run({ fake, connectAs }) {
+      const removing = await connectAs();
+      const other = await connectAs();
+      const heard = [];
+      const listener = () => heard.push("heard");
+      const unsubscribe = removing.cdp.transportEvents.on("disconnected", listener);
+      other.cdp.transportEvents.on("disconnected", listener);
+      await remove(removing, unsubscribe);
+      const dropped = nextTransportEvent(other, "disconnected");
+      fake.dropConnections();
+      await dropped;
+      assert.deepEqual(heard, ["heard"]);
+    },
+  })),
+  {
+    // #147: a listener that answers replaces the shared policy for that dialog only; once its
+    // handle closes, the listener is gone and the policy answers again. One answer per dialog.
+    label: "a dialog listener added through a handle answers instead of the policy until that handle closes",
+    async run({ fake, connectAs }) {
+      const listening = await connectAs();
+      await connectAs();
+      const answered = [];
+      listening.cdp.on("Page.javascriptDialogOpening", (_params, meta) => {
+        answered.push(meta.dialog.dismiss());
+      });
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [false]);
+      await Promise.all(answered);
+      await listening.close();
+      assert.deepEqual(byDialogSocket(await fake.dialogOnEverySocket()), [true]);
+      assert.deepEqual(fake.answers.map((a) => a.accept), [false, true]);
+    },
+  },
+  {
     label: "a property set or defined on a handle stays on that handle",
     async run({ connectAs }) {
       const writer = await connectAs();

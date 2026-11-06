@@ -1,9 +1,10 @@
 // Contract owner: the public named-instance registry lifecycle. These tests use
 // the real HTTP/WebSocket attach boundary, so stale-state, locking, or record
 // regressions fail without adding a production-only seam.
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
+import { connect as connectSocket } from "node:net";
 import {
   chmod,
   mkdir,
@@ -12,19 +13,26 @@ import {
   readdir,
   rm,
   stat,
+  unlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
-import { connectNamed, listInstances } from "../src/instances.js";
+import { connectNamed, listInstances, withEngineLock } from "../src/instances.js";
 import { readEvents } from "./fixtures/browser-lifecycle.mjs";
-import { reclaimLock, withLock } from "../src/instance-lock.js";
+import { EventEmitter } from "node:events";
+import { closeSync, openSync, writeSync } from "node:fs";
+import { PassThrough } from "node:stream";
+import { discoverLaunchedEndpoint, snapshotActivePort } from "../src/launch-endpoint.js";
 import { assertOwnerOnly } from "./fixtures/owner-only.mjs";
+import { tryAcquire } from "../src/lock-backend.js";
 
 const fixture = fileURLToPath(
   new URL("./fixtures/fake-named-browser.mjs", import.meta.url),
@@ -32,6 +40,237 @@ const fixture = fileURLToPath(
 const lockRaceChild = fileURLToPath(
   new URL("./fixtures/named-instance-child.mjs", import.meta.url),
 );
+const lockHolder = fileURLToPath(new URL("./fixtures/lock-holder.mjs", import.meta.url));
+const execFileAsync = promisify(execFile);
+
+// Subscribe as soon as the real process exists; retain lines and termination
+// so a fast child cannot signal before its test starts awaiting that signal.
+function startLockHolder(lockPath, { runtime = process.execPath, args = [], env = process.env } = {}) {
+  const child = spawn(runtime, [lockHolder, lockPath, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+  const lines = [];
+  const pending = new Set();
+  let stderr = "";
+  let ended = false;
+  child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+  const output = createInterface({ input: child.stdout });
+  output.on("line", (line) => {
+    lines.push(line);
+    for (const notify of pending) notify();
+  });
+  const closed = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      ended = true;
+      for (const notify of pending) notify();
+      resolve({ code, signal, stderr });
+    });
+  });
+  return {
+    child,
+    closed,
+    line(prefix) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => finish(new Error(`no ${prefix} from lock holder: ${stderr}`)), 30_000);
+        const finish = (error, value) => {
+          clearTimeout(timer);
+          pending.delete(check);
+          if (error) reject(error);
+          else resolve(value);
+        };
+        const check = () => {
+          const found = lines.find((line) => line.startsWith(prefix));
+          if (found !== undefined) finish(null, found);
+          else if (ended) finish(new Error(`lock holder exited before ${prefix}: ${stderr}`));
+        };
+        pending.add(check);
+        check();
+      });
+    },
+  };
+}
+
+async function otherRuntime(t) {
+  const name = process.versions.bun ? "node" : "bun";
+  try {
+    const { stdout } = await execFileAsync(name, ["-p", "process.execPath"]);
+    return stdout.trim();
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    t.skip(`${name} is not on PATH`);
+    return null;
+  }
+}
+
+function askDecoy(port, command) {
+  return new Promise((resolve, reject) => {
+    const socket = connectSocket({ host: "127.0.0.1", port });
+    let result = "";
+    socket.setEncoding("utf8");
+    socket.setTimeout(10_000, () => socket.destroy(new Error("decoy did not answer")));
+    socket.once("connect", () => socket.write(`${command}\n`));
+    socket.on("data", (data) => { result += data; });
+    socket.once("error", reject);
+    socket.once("end", () => resolve(Number(result.trim())));
+  });
+}
+
+// Crash release and non-inheritance share one owner: a second real process
+// acquires while the killed holder's child is demonstrably still serving.
+for (const crossRuntime of [false, true]) {
+  test(`a killed holder frees the name without cleanup (${crossRuntime ? "other" : "same"} runtime)`, { timeout: 60_000 }, async (t) => {
+    const runtime = crossRuntime ? await otherRuntime(t) : process.execPath;
+    if (!runtime) return;
+    const root = await mkdtemp(path.join(tmpdir(), "omowright-lock-"));
+    const lockPath = path.join(root, "crash.flock");
+    let holder;
+    let waiter;
+    let decoyPid;
+    let decoyPort;
+    try {
+      holder = startLockHolder(lockPath, { runtime, args: ["--decoy"] });
+      const decoy = await holder.line("DECOY ");
+      [, decoyPid, decoyPort] = decoy.split(" ").map(Number);
+      await holder.line("HELD");
+      waiter = startLockHolder(lockPath);
+      await waiter.line("WAITING");
+      const exited = once(holder.child, "exit");
+      holder.child.kill("SIGKILL");
+      await exited;
+      await waiter.line("HELD");
+      assert.equal(await askDecoy(decoyPort, "alive"), decoyPid);
+      assert.deepEqual(await readdir(root), ["crash.flock"]);
+      assert.equal((await stat(lockPath)).size, 0);
+      waiter.child.stdin.write("release\n");
+      assert.equal((await waiter.closed).code, 0);
+      assert.deepEqual(await readdir(root), ["crash.flock"]);
+    } finally {
+      await stopChild(holder?.child);
+      await stopChild(waiter?.child);
+      if (decoyPort) await askDecoy(decoyPort, "stop").catch(() => {});
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a waiter that times out leaves the holder's lock intact", { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "omowright-lock-"));
+  const lockPath = path.join(root, "timeout.flock");
+  const holder = startLockHolder(lockPath);
+  try {
+    await holder.line("HELD");
+    const waiter = await startLockHolder(lockPath, { args: ["--timeout=300", "--once"] }).closed;
+    assert.equal(waiter.code, 1);
+    assert.match(waiter.stderr, /timed out waiting for instance lock/);
+    // A further contender must still be excluded after the timeout.
+    const stillHeld = await startLockHolder(lockPath, { args: ["--timeout=0", "--once"] }).closed;
+    assert.equal(stillHeld.code, 1);
+    assert.match(stillHeld.stderr, /timed out waiting for instance lock/);
+    holder.child.stdin.write("release\n");
+    assert.equal((await holder.closed).code, 0);
+    const next = await startLockHolder(lockPath, { args: ["--once"] }).closed;
+    assert.equal(next.code, 0, next.stderr);
+  } finally {
+    await stopChild(holder.child);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a held lock file cannot be deleted on Windows", { skip: process.platform !== "win32", timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "omowright-lock-"));
+  const lockPath = path.join(root, "delete.flock");
+  const holder = startLockHolder(lockPath);
+  try {
+    await holder.line("HELD");
+    await assert.rejects(unlink(lockPath), (error) => ["EBUSY", "EPERM"].includes(error.code));
+    holder.child.stdin.write("release\n");
+    assert.equal((await holder.closed).code, 0);
+    await unlink(lockPath);
+  } finally {
+    await stopChild(holder.child);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Native Windows errors must not depend on thread-local GetLastError surviving
+// a round trip through JS. Exercise busy versus a real path error at the kernel
+// boundary, including after allocations/GC between separate lock attempts.
+test("Windows lock distinguishes sharing violations from path errors", { skip: process.platform !== "win32", timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "omowright-lock-"));
+  const lockPath = path.join(root, "native.flock");
+  const holder = await tryAcquire(lockPath);
+  try {
+    assert.ok(holder);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (process.versions.bun) Bun.gc(true);
+      assert.equal(await tryAcquire(lockPath), null);
+    }
+    await assert.rejects(tryAcquire(path.join(root, "missing", "native.flock")), (error) => {
+      // Node owns its libuv error mapping; Bun uses NTSTATUS from the call.
+      if (process.versions.bun) {
+        assert.equal(error.code, "ERR_INSTANCE_LOCK");
+        assert.match(error.message, /Windows error 3,/);
+      } else assert.equal(error.code, "ENOENT");
+      return true;
+    });
+  } finally {
+    await holder?.release();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// The production boundary must reject a missing or ineffective Linux utility,
+// rather than enter an unprotected critical section. No injected backend.
+test("the lock refuses to run without a working flock", { skip: process.platform !== "linux", timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "omowright-lock-"));
+  try {
+    const bin = path.join(root, "bin");
+    await mkdir(bin);
+    const env = { ...process.env, PATH: bin };
+    const missing = await startLockHolder(path.join(root, "missing.flock"), { env, args: ["--once"] }).closed;
+    assert.equal(missing.code, 1, "a missing flock must not enter the critical section");
+    assert.match(missing.stderr, /needs the flock utility/);
+    await writeFile(path.join(bin, "flock"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const ineffective = await startLockHolder(path.join(root, "ineffective.flock"), { env, args: ["--once"] }).closed;
+    assert.equal(ineffective.code, 1);
+    assert.match(ineffective.stderr, /not enforced/);
+    // BusyBox uses exit 1 for both contention (silent) and syscall failures.
+    await writeFile(path.join(bin, "flock"), "#!/bin/sh\nprintf 'flock: Bad file descriptor\\n' >&2\nexit 1\n", { mode: 0o700 });
+    const previousPath = process.env.PATH;
+    try {
+      process.env.PATH = bin;
+      await assert.rejects(tryAcquire(path.join(root, "broken.flock")), (error) => {
+        assert.equal(error.code, "ERR_INSTANCE_LOCK");
+        assert.match(error.message, /Bad file descriptor/);
+        return true;
+      });
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Migration owns this case: live legacy identities and incomplete takeover
+// files are inert, not inputs to the new lock or candidates for cleanup.
+test("legacy lock files are ignored and left as they were", { timeout: 30_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  const legacy = ["legacy.lock", "legacy.lock.1.token.stale", "legacy.lock.1.token.tmp"];
+  const bytes = `${JSON.stringify({ pid: process.pid, token: "legacy-holder" })}\n`;
+  let connection;
+  try {
+    for (const name of legacy) await writeFile(path.join(registryRoot, name), bytes, { mode: 0o600 });
+    connection = await connectNamed("legacy", {
+      registryRoot, browserPath: process.execPath, browserArgs: [fixture], lockTimeoutMs: 300,
+    });
+    assert.deepEqual(await connection.listTargets(), [fakeTarget]);
+    for (const name of legacy) assert.equal(await readFile(path.join(registryRoot, name), "utf8"), bytes);
+    assert.equal((await stat(path.join(registryRoot, "legacy.flock"))).size, 0);
+  } finally {
+    await connection?.close().catch(() => {});
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
 const fakeTarget = {
   description: "",
   id: "fake-page",
@@ -212,6 +451,31 @@ test("closing a launched named browser asks it to quit over CDP", { timeout: 20_
   }
 });
 
+test("named close waits for asynchronous browser cleanup without sending a signal", { timeout: 20_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  const logPath = path.join(registryRoot, "signals.log");
+  let connection;
+  try {
+    connection = await connectNamed("cleanup", namedLaunchOptions(registryRoot, {
+      FAKE_SIGNAL_LOG: logPath, FAKE_ON_CLOSE: "delayed",
+    }));
+    const child = connection.browserProcess;
+    const exit = once(child, "exit");
+    const signals = [];
+    const kill = child.kill.bind(child);
+    child.kill = (signal) => { signals.push(signal); return kill(signal); };
+    await connection.close();
+    connection = null;
+    const [code, signal] = await exit;
+    assert.deepEqual(signals, [], "the acknowledged quit gets its exit grace window");
+    assert.deepEqual(readEvents(logPath).map(({ event }) => event), ["CLOSE"]);
+    assert.deepEqual({ code, signal }, { code: 0, signal: null });
+  } finally {
+    await connection?.close().catch(() => {});
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
 test("closing a named browser that ignores Browser.close still ends it", { timeout: 30_000 }, async () => {
   const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
   const logPath = path.join(registryRoot, "signals.log");
@@ -366,7 +630,7 @@ test("connectNamed relaunches when a reused pid leaves a refused endpoint", asyn
       await readFile(path.join(registryRoot, "reused.json"), "utf8"),
     );
     assert.equal(rewritten.pid, connection.browserProcess.pid);
-    // Registry hygiene: no lock or temp artifacts survive a completed flow.
+    // Reject legacy .lock and temporary artifacts; permanent .flock files stay.
     const leftovers = (await readdir(registryRoot)).filter(
       (name) => name.endsWith(".lock") || name.endsWith(".tmp"),
     );
@@ -405,6 +669,64 @@ test("connectNamed rejects an alive holder whose endpoint hangs", async () => {
     );
   } finally {
     server.close();
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+// Time is the contract here: attach discovery must use the connection budget,
+// not the one-second listInstances health-check budget. A slow, healthy browser
+// must attach without launching a replacement; explicit probe overrides remain
+// covered by the hanging-holder test above.
+test("connectNamed waits for slow holder discovery within the connection budget", { timeout: 30_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
+  let launched;
+  let attached;
+  try {
+    launched = await connectNamed("slow", {
+      registryRoot, browserPath: process.execPath,
+      browserArgs: [fixture, "--fake-probe-delay=1200"],
+    });
+    attached = await connectNamed("slow", { registryRoot, connectTimeoutMs: 5_000 });
+    assert.equal(attached.browserProcess, undefined);
+    assert.deepEqual(await attached.listTargets(), [fakeTarget]);
+  } finally {
+    await attached?.close().catch(() => {});
+    await launched?.close().catch(() => {});
+    await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+// Public API contract: a browserPath that does not exist is a launch failure,
+// reported promptly under both runtimes (bun leaves a never-spawned child's
+// exitCode null and emits no "exit", which once hung the launch cleanup).
+test("connectNamed rejects a missing browserPath promptly and leaves nothing behind", { timeout: 10_000 }, async () => {
+  const registryRoot = await mkdtemp(
+    path.join(tmpdir(), "omowright-instances-"),
+  );
+  const browserPath = path.join(registryRoot, "no-such-browser");
+  const boundMs = 3_000;
+  let timer;
+  try {
+    const outcome = await Promise.race([
+      connectNamed("missing", { registryRoot, browserPath }).then(
+        (connection) => ({ connection }),
+        (error) => ({ error }),
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ unsettled: true }), boundMs);
+      }),
+    ]);
+    assert.ok(!outcome.unsettled, `connectNamed did not settle within ${boundMs}ms`);
+    await outcome.connection?.close();
+    assert.ok(outcome.error, "connectNamed resolved for a missing browser");
+    assert.equal(outcome.error.code, "ENOENT");
+    assert.ok(
+      outcome.error.message.includes(browserPath),
+      `error does not name the path: ${outcome.error.message}`,
+    );
+    assert.deepEqual(await readdir(registryRoot), ["missing.flock"]);
+  } finally {
+    clearTimeout(timer);
     await rm(registryRoot, { recursive: true, force: true });
   }
 });
@@ -483,7 +805,10 @@ test("concurrent connectNamed calls launch exactly one browser", async () => {
 // on one name through a stdin barrier, so nothing in a single process's memory
 // can serialize them: a lock that two holders can enter launches two browsers
 // here and leaves one of them unregistered.
-test("two processes racing one name launch exactly one browser", { timeout: 30_000 }, async () => {
+for (const crossRuntime of [false, true]) {
+test(`two processes racing one name launch exactly one browser (${crossRuntime ? "mixed" : "same"} runtimes)`, { timeout: 60_000 }, async (t) => {
+  const secondRuntime = crossRuntime ? await otherRuntime(t) : process.execPath;
+  if (!secondRuntime) return;
   const registryRoot = await mkdtemp(
     path.join(tmpdir(), "omowright-instances-"),
   );
@@ -494,7 +819,7 @@ test("two processes racing one name launch exactly one browser", { timeout: 30_0
       (index) =>
         new Promise((resolve, reject) => {
           const child = spawn(
-            process.execPath,
+            index === 0 ? process.execPath : secondRuntime,
             [lockRaceChild, registryRoot, "contended"],
             { stdio: ["pipe", "pipe", "pipe"] },
           );
@@ -550,7 +875,7 @@ test("two processes racing one name launch exactly one browser", { timeout: 30_0
     for (const result of results) assert.deepEqual(result.targets, [fakeTarget]);
     assert.doesNotThrow(() => process.kill(record.pid, 0));
     const leftovers = (await readdir(registryRoot)).filter(
-      (name) => !name.endsWith(".json"),
+      (name) => !name.endsWith(".json") && !name.endsWith(".flock"),
     );
     assert.deepEqual(leftovers, []);
   } finally {
@@ -567,207 +892,21 @@ test("two processes racing one name launch exactly one browser", { timeout: 30_0
   }
 });
 
-// Contract owner: what counts as an abandoned lock. A lock with no readable
-// identity is a contender caught between creating and writing its file, so
-// reclaiming it on sight lets two callers hold the same name.
-test("connectNamed treats an identity-less lock as held until it ages out", async () => {
-  const registryRoot = await mkdtemp(
-    path.join(tmpdir(), "omowright-instances-"),
-  );
-  const lockPath = path.join(registryRoot, "halfwritten.lock");
-  const options = {
-    registryRoot,
-    browserPath: process.execPath,
-    browserArgs: [fixture],
-  };
-  let connection;
-  try {
-    await writeFile(lockPath, "", { mode: 0o600 });
-
-    await assert.rejects(
-      connectNamed("halfwritten", { ...options, lockTimeoutMs: 300 }),
-      /timed out waiting for instance lock/,
-    );
-    // The lock survived: nothing stole it and nothing was launched.
-    assert.equal((await stat(lockPath)).size, 0);
-    assert.deepEqual(await readdir(registryRoot), ["halfwritten.lock"]);
-
-    // Older than any legitimate hold, it is finally reclaimed.
-    const aged = new Date(Date.now() - 3_600_000);
-    await utimes(lockPath, aged, aged);
-    connection = await connectNamed("halfwritten", options);
-
-    assert.equal(connection.browserProcess?.pid > 0, true);
-    assert.deepEqual(
-      (await readdir(registryRoot)).filter((name) => !name.endsWith(".json")),
-      [],
-    );
-  } finally {
-    await connection?.close().catch(() => {});
-    await rm(registryRoot, { recursive: true, force: true });
-  }
-});
-
-// Contract owner: what counts as an abandoned lock. A live pid alone is not the
-// holder: once the holder dies its pid can be handed to an unrelated process,
-// and a pid-only check would keep the name locked until that process exits.
-// Each start-time lookup is one PowerShell call on Windows (about a second on
-// a CI runner), and this case makes two before it can reclaim, so the budgets
-// leave room for that; a lock that is never reclaimed still fails the case.
-test("connectNamed reclaims a lock whose pid now belongs to another process", { timeout: 60_000 }, async () => {
-  const registryRoot = await mkdtemp(
-    path.join(tmpdir(), "omowright-instances-"),
-  );
-  const lockPath = path.join(registryRoot, "reused.lock");
-  const unrelated = await launchFakeBrowser();
-  let connection;
-  try {
-    await writeFile(
-      lockPath,
-      `${JSON.stringify({
-        pid: unrelated.child.pid,
-        start: "a start time this pid never had",
-        token: "crashed-holder",
-        acquiredAt: new Date().toISOString(),
-      })}\n`,
-      { mode: 0o600 },
-    );
-
-    connection = await connectNamed("reused", {
-      registryRoot,
-      browserPath: process.execPath,
-      browserArgs: [fixture],
-      lockTimeoutMs: 20_000,
-    });
-
-    assert.equal(connection.browserProcess?.pid > 0, true);
-    assert.notEqual(connection.browserProcess.pid, unrelated.child.pid);
-    assert.doesNotThrow(() => process.kill(unrelated.child.pid, 0));
-  } finally {
-    await connection?.close().catch(() => {});
-    await stopChild(unrelated.child);
-    await rm(registryRoot, { recursive: true, force: true });
-  }
-});
-
-// Contract owner: the takeover never deletes a live lock. Filesystems such as
-// ext4 reuse inode numbers, so a reclaimer that inspected a dead lock can later
-// find a new holder's lock under the same inode; the token written into every
-// lock is what tells them apart. Test seam: reclaimLock is called directly
-// because no timing can force an inode to be reused.
-test("reclaimLock leaves a live lock that reuses the dead lock's inode", async () => {
-  const registryRoot = await mkdtemp(
-    path.join(tmpdir(), "omowright-instances-"),
-  );
-  const lockPath = path.join(registryRoot, "reused-inode.lock");
-  const live = `${JSON.stringify({
-    pid: process.pid,
-    token: "live-holder",
-    acquiredAt: new Date().toISOString(),
-  })}\n`;
-  try {
-    await writeFile(lockPath, live, { mode: 0o600 });
-    const { ino } = await stat(lockPath);
-
-    assert.equal(await reclaimLock(lockPath, ino, "dead-holder"), false);
-
-    assert.equal(await readFile(lockPath, "utf8"), live);
-    assert.deepEqual(await readdir(registryRoot), ["reused-inode.lock"]);
-  } finally {
-    await rm(registryRoot, { recursive: true, force: true });
-  }
-});
-
-// Contract owner: the takeover never deletes a live lock, even when a third
-// contender takes the name while the lock is moved aside. Test seam: the hooks
-// run at the two points between reclaimLock's checks and its filesystem steps,
-// because no timing can force another process into those gaps.
-function lockText(pid, token) {
-  return `${JSON.stringify({ pid, token, acquiredAt: new Date().toISOString() })}\n`;
 }
 
-async function writeLiveLock(lockPath, token) {
-  await rm(lockPath, { force: true });
-  await writeFile(lockPath, lockText(process.pid, token), { mode: 0o600 });
-}
-
-test("reclaimLock puts a live lock back after a third contender took the name", async () => {
-  const registryRoot = await mkdtemp(
-    path.join(tmpdir(), "omowright-instances-"),
-  );
-  const lockPath = path.join(registryRoot, "three-way.lock");
+// Cost contract (#104): the registry root carries an inheritable owner-only
+// grant, so a lock file created in it already admits only its owner and no
+// icacls runs per lock attempt. Proof on a real Windows host: the lock keeps
+// the inherited entries an icacls grant would have replaced.
+test("a lock file in the registry inherits the root's owner-only grant on Windows", { skip: process.platform !== "win32", timeout: 60_000 }, async () => {
+  const registryRoot = await mkdtemp(path.join(tmpdir(), "omowright-instances-"));
   try {
-    await writeFile(lockPath, lockText(deadPid(), "dead-holder"), { mode: 0o600 });
-    const { ino } = await stat(lockPath);
-    let blocked = 0;
-
-    const reclaimed = await reclaimLock(lockPath, ino, "dead-holder", {
-      hooks: {
-        // The dead lock is replaced by a live one after the checks passed ...
-        beforeMove: () => writeLiveLock(lockPath, "live-holder"),
-        // ... and once that live lock is moved aside, a third contender locks the name.
-        afterMove: () =>
-          writeFile(lockPath, lockText(process.pid, "third"), { mode: 0o600 }),
-        onPutBackBlocked: async () => {
-          blocked += 1;
-          if (blocked === 1) await rm(lockPath);
-        },
-      },
+    await withEngineLock(registryRoot, registryRoot, async () => {
+      const locks = (await readdir(registryRoot)).filter((name) => name.endsWith(".flock"));
+      assert.equal(locks.length, 1);
+      await assertOwnerOnly([path.join(registryRoot, locks[0]), "inherited file"]);
     });
-
-    assert.equal(reclaimed, false);
-    assert.equal(blocked, 1, "the put-back met the third contender's lock once");
-    assert.equal(JSON.parse(await readFile(lockPath, "utf8")).token, "live-holder");
-    assert.deepEqual(await readdir(registryRoot), ["three-way.lock"]);
   } finally {
-    await rm(registryRoot, { recursive: true, force: true });
-  }
-});
-
-test("a holder that releases while its lock is moved aside leaves no lock behind", async () => {
-  const registryRoot = await mkdtemp(
-    path.join(tmpdir(), "omowright-instances-"),
-  );
-  const lockPath = path.join(registryRoot, "release-aside.lock");
-  const lockOptions = { timeoutMs: 5_000, staleGraceMs: 60_000 };
-  let finishHold;
-  let holding;
-  let held = false;
-  try {
-    await writeFile(lockPath, lockText(deadPid(), "dead-holder"), { mode: 0o600 });
-    const { ino } = await stat(lockPath);
-
-    const reclaimed = await reclaimLock(lockPath, ino, "dead-holder", {
-      hooks: {
-        beforeMove: async () => {
-          await rm(lockPath);
-          const entered = new Promise((resolve) => {
-            holding = withLock(lockPath, lockOptions, () => {
-              resolve();
-              return new Promise((done) => {
-                finishHold = done;
-              });
-            });
-          });
-          await entered;
-        },
-        afterMove: () =>
-          writeFile(lockPath, lockText(process.pid, "third"), { mode: 0o600 }),
-        onPutBackBlocked: async () => {
-          if (held) return;
-          held = true;
-          finishHold();
-          await holding;
-          await rm(lockPath);
-        },
-      },
-    });
-
-    assert.equal(reclaimed, false);
-    await assert.rejects(stat(lockPath), (error) => error?.code === "ENOENT");
-    assert.deepEqual(await readdir(registryRoot), []);
-  } finally {
-    finishHold?.();
     await rm(registryRoot, { recursive: true, force: true });
   }
 });
@@ -878,6 +1017,56 @@ test("connectNamed ignores a DevToolsActivePort left before the launch", async (
     await connection?.close().catch(() => {});
     await decoy.close();
     await rm(registryRoot, { recursive: true, force: true });
+  }
+});
+
+// Contract owner: launch endpoint identity (#107). An identity change does not
+// prove a pre-launch DevToolsActivePort was rewritten: Linux updates mtime
+// before it copies a write's data, and a touch or an in-place rewrite moves it
+// too. Stale bytes name another browser, and the launch check would compare
+// that browser's answer with the id read from the same stale bytes, so
+// discovery must judge the bytes, not only the identity.
+function spawnedChildStub() {
+  const child = new EventEmitter();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  return child;
+}
+
+test("launch discovery never accepts a pre-launch DevToolsActivePort whose bytes are unchanged", async () => {
+  const profileDir = await mkdtemp(path.join(tmpdir(), "omowright-activeport-"));
+  const portFile = path.join(profileDir, "DevToolsActivePort");
+  try {
+    await writeFile(portFile, "61234\n/devtools/browser/stale");
+    const past = new Date(Date.now() - 60_000);
+    await utimes(portFile, past, past);
+    const previousActivePort = await snapshotActivePort(profileDir);
+    // The identity moves, the bytes stay the stale browser's.
+    await utimes(portFile, new Date(), new Date());
+
+    await assert.rejects(
+      discoverLaunchedEndpoint(spawnedChildStub(), { profileDir, timeoutMs: 500, previousActivePort }),
+      /did not expose a DevTools endpoint within 500ms/,
+    );
+
+    // The launched browser's own write is still accepted. Written the way
+    // Chromium writes it (truncated at open): bun's writeFile rewrites an
+    // existing file in place, which discovery could read torn (old prefix,
+    // new tail), a shape no Chromium write produces.
+    const discovered = discoverLaunchedEndpoint(spawnedChildStub(), { profileDir, timeoutMs: 10_000, previousActivePort });
+    const fd = openSync(portFile, "w");
+    try {
+      writeSync(fd, "54321\n/devtools/browser/launched");
+    } finally {
+      closeSync(fd);
+    }
+    assert.deepEqual(await discovered, {
+      endpoint: "http://127.0.0.1:54321",
+      browserPath: "/devtools/browser/launched",
+    });
+  } finally {
+    await rm(profileDir, { recursive: true, force: true });
   }
 });
 
@@ -1001,6 +1190,9 @@ test("listInstances reports versioned records with liveness metadata", { timeout
       mode: 0o600,
     });
     await chmod(path.join(registryRoot, "alive.json"), 0o644);
+    for (const name of ["ignored.flock", "old.lock", "old.lock.1.token.stale", "old.lock.1.token.tmp"]) {
+      await writeFile(path.join(registryRoot, name), "", { mode: 0o600 });
+    }
 
     const instances = await listInstances({ registryRoot });
 

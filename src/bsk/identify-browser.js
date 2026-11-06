@@ -6,6 +6,9 @@ export const RECENT_USE_MS = 7 * 24 * 60 * 60 * 1000;
 // Tencent/BrowserSkill apps/extension/src/transport/handshake.ts). Only a user-agent token names one
 // browser; forks such as Brave and Arc normally keep Chrome's user agent and report "chrome", so
 // "chrome"/"chromium" count only when exactly one browser able to send them is running.
+// "brave" and "arc" stay in OWN_TOKEN_NAMES anyway: they only matter if the extension ever sends those
+// names itself, and then the name can only mean that browser. Without them such a name would match no
+// browser at all, so keep them.
 const OWN_TOKEN_NAMES = new Set(["edge", "opera", "brave", "arc"]);
 const FAMILY_NAMES = new Set(["chrome", "chromium"]);
 const ALWAYS_SEND_OWN_TOKEN = new Set(["edge", "opera"]);

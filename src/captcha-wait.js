@@ -37,13 +37,17 @@ export async function waitForCaptcha(page, {
     if (initial) return result(initial);
     signal?.addEventListener("abort", stop, { once: true });
     scheduleDeadline();
+    // The first evaluation only yields to cancellation: a scheduling stall
+    // between the call and this microtask must not time the wait out unevaluated.
+    let evaluated = false;
     for (;;) {
       let accepted;
       try {
         // Promise.race keeps a rejection handler on a non-cooperative predicate
         // even after this wait has timed out or been cancelled.
         accepted = await Promise.race([
-          Promise.resolve().then(() => terminal() ? STOP : until(page, { signal: operation.signal })),
+          Promise.resolve().then(() => (evaluated ? terminal() : signal?.aborted)
+            ? STOP : until(page, { signal: operation.signal })),
           stopped,
         ]);
       } catch (error) {
@@ -51,6 +55,7 @@ export async function waitForCaptcha(page, {
         if (outcome) return result(outcome);
         throw error;
       }
+      evaluated = true;
       const outcome = terminal();
       if (outcome) return result(outcome);
       if (accepted === true) return result("matched");

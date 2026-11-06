@@ -1187,8 +1187,10 @@
 				if (++visited > DEREF_WALKER_BUDGET) break;
 				if (getRole(node) === meta.role && getAccessibleName(node) === meta.name) candidates.push(node);
 			}
-			if (candidates.length === 1) return candidates[0] ?? null;
-			if (meta.nthAmongSameSignature < candidates.length) return candidates[meta.nthAmongSameSignature] ?? null;
+			// Recover only a match that was unique in the snapshot and is unique now. Picking
+			// the nth of several look-alikes after a re-render can act on a different row.
+			const sameInSnapshot = Object.values(_lastRefs).filter((other) => other.role === meta.role && other.name === meta.name).length;
+			if (sameInSnapshot === 1 && candidates.length === 1) return candidates[0] ?? null;
 			return null;
 		}
 		function retarget(element, behavior) {

@@ -79,10 +79,10 @@ export function createTrace(page, options = {}) {
 
   unsubscribers.push(page.on("dialog", dialog => record({
     kind: "dialog",
-    type: dialog?.type ?? null,
-    message: dialog?.message ?? "",
-    defaultPrompt: dialog?.defaultPrompt ?? "",
-    url: dialog?.url ?? null,
+    type: dialog.type() ?? null,
+    message: dialog.message() ?? "",
+    defaultPrompt: dialog.defaultValue(),
+    url: dialog.url ?? null,
   })));
 
   if (events) {

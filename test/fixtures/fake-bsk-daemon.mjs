@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultSocketPath } from "../../src/bsk/ipc-client.js";
 
-export async function startFakeBskDaemon({ handlers = {}, delayMs = 0, sockPathFor = defaultSocketPath } = {}) {
+export async function startFakeBskDaemon({ handlers = {}, delayMs = 0, sockPathFor = defaultSocketPath, splitReplyAt } = {}) {
   const home = mkdtempSync(path.join(tmpdir(), "fake-bsk-home-"));
   mkdirSync(path.join(home, "run"));
   // Listen where the real daemon would for this home: run/daemon.sock, or the derived pipe on Windows.
@@ -43,7 +43,14 @@ export async function startFakeBskDaemon({ handlers = {}, delayMs = 0, sockPathF
     if (reply === undefined) return; // scripted silence: the client must time out
     const send = () => {
       const body = typeof reply === "string" ? reply : JSON.stringify({ id: frame.id, ...reply });
-      if (!socket.destroyed) socket.write(body + "\n");
+      if (socket.destroyed) return;
+      if (splitReplyAt === undefined) { socket.write(body + "\n"); return; }
+      // Two separate writes, the cut placed inside one multi-byte UTF-8 character.
+      const bytes = Buffer.from(body + "\n", "utf8");
+      const cut = bytes.indexOf(Buffer.from(splitReplyAt, "utf8")) + 1;
+      // The pause keeps the kernel from merging the halves into one read; the fixed client
+      // decodes either way, so it only decides whether the old decoder is exercised.
+      socket.write(bytes.subarray(0, cut), () => setTimeout(() => { if (!socket.destroyed) socket.write(bytes.subarray(cut)); }, 50));
     };
     if (delayMs > 0) setTimeout(send, delayMs); else send();
   }

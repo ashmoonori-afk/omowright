@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isPidAlive } from "./instance-lock.js";
-import { ownProcessStartTime, processStartTime } from "./lock-file.js";
+import { ownProcessStartTime, processStartTime } from "./process-start-time.js";
 
 export const TERM_GRACE_MS = 5_000;
 const PID_FILE_NAME = "omowright-browser.pid";
@@ -35,6 +35,11 @@ export function profileDirFromArgs(browserArgs) {
 const signalsCanAskToQuit = process.platform !== "win32";
 
 export async function terminateChild(child, { quitRequested = false } = {}) {
+  // No pid means the spawn itself failed (e.g. ENOENT): there is no process to
+  // end. Neither runtime emits "exit" for such a child; node at least sets a
+  // negative exitCode, but bun leaves it null, so the wait below would hang
+  // forever (#154).
+  if (child.pid === undefined) return;
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise((resolve) => child.once("exit", resolve));
   if (signalsCanAskToQuit) {

@@ -158,7 +158,14 @@ export async function installWin32NativeHost({ hostName, hostPath, dir, registry
   if (firstMissing === 0) throw new Error(`nativeMessagingHostDir security rejected: ${dirChain[0]} is missing`);
   const created = firstMissing > 0 ? dirChain.slice(firstMissing) : [];
   const file = path.win32.join(dirChain.at(-1), `${hostName}.json`);
-  if (created.length) await mkdir(dirChain.at(-1), { recursive: true });
+  // Only what this call itself created is removed on failure: the directories its own mkdir made (a concurrent install
+  // may have made them first) and the manifest only after its own write produced it.
+  const firstMade = created.length ? await mkdir(dirChain.at(-1), { recursive: true }) : undefined;
+  // mkdir creates a tail of dirChain and reports its first directory, possibly in \\?\ or long-name form, so locate it
+  // by depth rather than by spelling: C:\a\b has three components and is dirChain[2].
+  const madeDepth = firstMade === undefined ? 0 : firstMade.replace(/^\\\\\?\\/, "").split(/[\\/]+/).filter(Boolean).length;
+  const made = madeDepth > 0 && madeDepth <= dirChain.length ? dirChain.slice(madeDepth - 1) : [];
+  let wroteManifest = false;
   try {
     if (created.length) {
       const again = await inspectWin32Paths(created);
@@ -174,6 +181,7 @@ export async function installWin32NativeHost({ hostName, hostPath, dir, registry
     const current = await registryDefault(hostKey);
     if (current !== null && current.toLowerCase() !== file.toLowerCase() && !force) throw new Error(`${hostKey} already points at ${current}; use force`);
     const manifest = await writeManifest(file);
+    wroteManifest = true;
     const written = await inspectWin32Paths([file]);
     const manifestRisk = win32PathRisk(written.items[0], "manifest", user);
     // On a force reinstall the HKCU value may already name this path; it then points at a missing file, which Chrome
@@ -183,10 +191,10 @@ export async function installWin32NativeHost({ hostName, hostPath, dir, registry
     if (added.code !== 0) throw new Error(`native host registry write failed: ${String(added.stderr).trim()}`);
     return { path: file, manifest, registryKey: hostKey };
   } catch (error) {
-    // A directory this call created held nothing before it, so everything in it is ours to remove on failure.
-    if (created.length) {
-      await unlink(file).catch(() => {});
-      for (const made of [...created].reverse()) await rmdir(made).catch(() => {});
+    // rmdir (not recursive) leaves a directory alone once another install has put a file in it.
+    if (made.length) {
+      if (wroteManifest) await unlink(file).catch(() => {});
+      for (const entry of [...made].reverse()) await rmdir(entry).catch(() => {});
     }
     throw error;
   }

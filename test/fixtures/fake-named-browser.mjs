@@ -1,4 +1,4 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, writeSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import { WebSocketServer } from "ws";
@@ -22,15 +22,21 @@ const target = {
 const server = createServer((req, res) => {
   const port = server.address().port;
   if (req.url === "/json/version") {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({
-        Browser: "FakeNamedBrowser/1.0",
-        "Protocol-Version": "1.3",
-        webSocketDebuggerUrl:
-          `ws://127.0.0.1:${port}/devtools/browser/fake`,
-      }),
-    );
+    // A bounded discovery latency exercises the caller's timeout contract.
+    const delay = Number(flag("fake-probe-delay") ?? 0);
+    const reply = () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          Browser: "FakeNamedBrowser/1.0",
+          "Protocol-Version": "1.3",
+          webSocketDebuggerUrl:
+            `ws://127.0.0.1:${port}/devtools/browser/fake`,
+        }),
+      );
+    };
+    if (delay) setTimeout(reply, delay);
+    else reply();
     return;
   }
   if (req.url === "/json/list") {
@@ -66,7 +72,12 @@ webSockets.on("connection", (webSocket) => {
       record("CLOSE");
       const reply = JSON.stringify({ id: message.id, result: {} });
       if (process.env.FAKE_ON_CLOSE === "ignore") webSocket.send(reply);
-      else webSocket.send(reply, shutdown);
+      else if (process.env.FAKE_ON_CLOSE === "delayed") {
+        // Model asynchronous browser cleanup after acknowledging the request.
+        // On Windows terminateChild itself grants 5 s after Browser.close.
+        // Cleanup at 6 s needs the named close's additional 2 s window too.
+        webSocket.send(reply, () => setTimeout(shutdown, process.platform === "win32" ? 6_000 : 250));
+      } else webSocket.send(reply, shutdown);
       return;
     }
     const result = message.method === "Browser.getVersion"
@@ -101,10 +112,15 @@ server.listen(0, "127.0.0.1", () => {
   const port = server.address().port;
   const userDataDir = flag("user-data-dir");
   if (userDataDir) {
-    writeFileSync(
-      path.join(userDataDir, "DevToolsActivePort"),
-      `${flag("fake-active-port") ?? port}\n/devtools/browser/fake`,
-    );
+    // Truncated at open, then written, as Chromium does. bun's writeFileSync
+    // rewrites an existing file in place on Linux, which lets a concurrent
+    // reader see the new bytes over the old file's tail (#107).
+    const fd = openSync(path.join(userDataDir, "DevToolsActivePort"), "w");
+    try {
+      writeSync(fd, `${flag("fake-active-port") ?? port}\n/devtools/browser/fake`);
+    } finally {
+      closeSync(fd);
+    }
   }
   if (!process.argv.includes("--fake-quiet")) {
     process.stderr.write(

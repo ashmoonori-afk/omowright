@@ -1,7 +1,15 @@
 export { connect, BrowserConnection, TabRepository } from "./connection.js";
 export { OMOWRIGHT_PAGE_CDP_METHODS } from "./cdp-methods.js";
-export { connectPipe, PipeCdpClient } from "./pipe.js";
+export {
+  CdpCommandTimeoutError,
+  CdpPipeClosedError,
+  CdpSessionCrashedError,
+  CdpSessionDetachedError,
+  connectPipe,
+  PipeCdpClient,
+} from "./pipe.js";
 export { connectNamed, listInstances } from "./instances.js";
+export { RunningBrowserError, connectRunningBrowser, findRunningBrowser, readDevToolsActivePort } from "./running-browser.js";
 export { SharedConnectionError } from "./shared-connections.js";
 export {
   buildCloakBrowserArgs,
@@ -13,6 +21,7 @@ export { compactSnapshot, snapshotTokens, toolSchemas } from "./llm.js";
 export { createCua } from "./cua.js";
 export { createCaptcha, macOSVisionOcr } from "./captcha.js";
 export { BROWSER_EVENT_NAMES, createEvents } from "./events.js";
+export { PAGE_EVENT_NAMES } from "./page-events.js";
 export { AgentTabManager, createAgentTabs } from "./agent-tabs.js";
 export { DEFAULT_AGENT_VIEWPORT, repinViewport } from "./viewport.js";
 export { createChromeApi } from "./bridge-transport.js";
@@ -45,7 +54,10 @@ export {
   OmOPage,
   SessionManager,
   UnsupportedOperationError,
+  VideoRecordingError,
+  WaitForFunctionTimeoutError,
   takeSnapshot,
+  selectors,
 } from "./core.js";
 export { normalizeDialogPolicy, resolveDialogAction } from "./dialog-policy.js";
 export { DEVICE_PRESETS, emulate } from "./emulate.js";
@@ -54,6 +66,7 @@ export { toHar } from "./har.js";
 export { requestHuman } from "./human-handoff.js";
 export { describeLayers, layersHeader, snapshotWithLayers } from "./layers.js";
 export { createNetworkSnoop } from "./network-snoop.js";
+export { NetworkBodyUnavailableError } from "./network-events.js";
 export { createRoutes } from "./routes.js";
 export { collectWhileScrolling } from "./scroll-collect.js";
 export { createTrace } from "./trace.js";

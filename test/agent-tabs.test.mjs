@@ -6,7 +6,7 @@ import { BrowserConnection } from "../src/connection.js";
 class Emitter { constructor() { this.map = new Map(); } on(n, f) { const s = this.map.get(n) ?? new Set(); s.add(f); this.map.set(n, s); return () => s.delete(f); } emit(n, p, m = {}) { for (const f of [...this.map.get(n) ?? []]) f(p, m); } }
 function connection({ headless = true, send = null } = {}) {
   const calls = []; const cdp = { calls, isHeadless: headless, transportEvents: new Emitter(), on: (n, f) => cdp.events.on(n, f), events: new Emitter(), ensureConnected: async () => {}, send: send ?? (async (method, params, sessionId, options) => { calls.push({ method, params, sessionId, options }); if (method === "Target.createTarget") return { targetId: "owned" }; return {}; }) }; 
-  const page = { targetId: "owned", cdp, events: new Emitter(), resolveSessionId: async () => "session", setCachedViewportSize(size) { this.viewport = size; }, on(name, fn) { return this.events.on(name, fn); }, async dispose() {} };
+  const page = { targetId: "owned", cdp, events: new Emitter(), resolveSessionId: async () => "session", setCachedViewportSize(size) { this.viewport = size; }, on(name, fn) { return this.events.on(name, fn); }, async goto(url) { calls.push({ method: "goto", url }); }, async dispose() {} };
   return { cdp, page, attachPage: async () => { calls.push({ method: "attachPage" }); return page; } };
 }
 test("creates owned background tab and repins after main navigation", async () => {
@@ -14,7 +14,7 @@ test("creates owned background tab and repins after main navigation", async () =
   const tab = await tabs.create();
   assert.deepEqual(tab.viewport, DEFAULT_AGENT_VIEWPORT); assert.deepEqual(tabs.get("owned").viewport, tab.viewport);
   const create = c.cdp.calls.find(call => call.method === "Target.createTarget");
-  assert.deepEqual(create.params, { url: "about:blank", background: true }); assert.ok(create.options?.capability);
+  assert.deepEqual(create.params, { url: "about:blank", background: true, newWindow: true }); assert.ok(create.options?.capability);
   assert.equal(c.cdp.calls.some(call => call.method === "Target.activateTarget"), true);
   c.page.events.emit("framenavigated", { frameId: "main", parentFrameId: null });
   await Promise.resolve(); await Promise.resolve();
@@ -76,13 +76,15 @@ test("BrowserConnection exposes newTab on the attach path", async () => {
   const cdp = {
     isHeadless: true,
     transportEvents: new Emitter(),
-    on: () => () => {},
+    events: new Emitter(),
+    on: (name, listener) => cdp.events.on(name, listener),
     ensureConnected: async () => {},
     discoverTargets: async () => [],
     close: async () => {},
     send: async (method, params, sessionId, options) => {
       calls.push({ method, params, sessionId, options });
       if (method === "Target.createTarget") return { targetId: "attached-tab" };
+      if (method === "Target.closeTarget") cdp.events.emit("Target.targetDestroyed", { targetId: params.targetId });
       return {};
     },
   };
@@ -93,11 +95,12 @@ test("BrowserConnection exposes newTab on the attach path", async () => {
   const opened = await connection.newTab();
   assert.equal(opened, page);
   const create = calls.find(call => call.method === "Target.createTarget");
-  assert.deepEqual(create.params, { url: "about:blank", background: true });
+  assert.deepEqual(create.params, { url: "about:blank", background: true, newWindow: true });
   assert.ok(create.options?.capability, "createTarget must carry the reserved capability");
   const order = calls.map(call => call.method);
   assert.ok(order.indexOf("Target.activateTarget") < order.indexOf("attachPage"), `activation must precede attach: ${order.join(", ")}`);
   assert.ok(order.includes("Emulation.setDeviceMetricsOverride"), "newTab must repin the viewport");
   assert.equal(createAgentTabs(connection).get("attached-tab").page, page, "newTab must register with the per-connection manager");
-  await createAgentTabs(connection).dispose({ closeOwned: false });
+  await connection.close();
+  assert.equal(calls.some(call => call.method === "Target.closeTarget"), false, "disconnect must leave ordinary newTab targets open");
 });
